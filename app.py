@@ -1,10 +1,10 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║   Pothole Detection from Road Videos — Streamlit Frontend                  ║
-║   Course project — Custom CNN (no pretrained models)                       ║
+║   Course project — Two-Stage Pipeline (Region Proposals + Custom CNN)       ║
 ║                                                                             ║
 ║   REQUIRED PACKAGES:                                                        ║
-║       pip install streamlit opencv-python numpy imageio-ffmpeg             ║
+║       pip install streamlit opencv-python numpy imageio-ffmpeg torch pandas║
 ║                                                                             ║
 ║   RUN:                                                                      ║
 ║       streamlit run app.py                                                  ║
@@ -27,11 +27,10 @@ import streamlit as st
 #  CONSTANTS  (edit these; no magic numbers in the rest of the code)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# The custom CNN operates at this resolution internally.
-# NOTE: Rescaling is done INSIDE your CNN code, not here.
-#       predict() receives the original-size frame and must return boxes
-#       in the original frame's pixel coordinates.
-MODEL_INPUT_SIZE = (416, 416)
+# ResPotholeNet operates on 128x128 candidate patches extracted by the
+# Stage-1 road region proposal network (adaptive thresholding & morphological filters).
+# Bounding box coordinates are mapped back to original frame resolution.
+PATCH_SIZE = (128, 128)
 
 # Severity is derived from relative box area (box_area / frame_area).
 # These are the upper-bound ratios for each bucket:
@@ -60,8 +59,8 @@ MAX_VIDEO_DURATION_S    = 300          # 5 minutes
 TEMP_ROOT = Path(tempfile.gettempdir()) / "pothole_app"
 
 # ── DEMO MODE ─────────────────────────────────────────────────────────────────
-# DEMO_MODE is now False by default because our custom CNN (ResPotholeNet)
-# is trained and plugged in! You can still toggle it in the sidebar if needed.
+# DEMO_MODE simulates detections for UI testing when testing without trained weights.
+# False by default because ResPotholeNet is connected!
 DEMO_MODE = False
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -75,9 +74,11 @@ def load_model():
     """Load and cache our custom CNN detector (ResPotholeNet)."""
     try:
         from detector import PotholeDetector
-        return PotholeDetector(weights_path="pothole_cnn.pth")
+        weights_file = Path("pothole_cnn.pth")
+        weights_path = str(weights_file) if weights_file.exists() else None
+        return PotholeDetector(weights_path=weights_path)
     except Exception as e:
-        print(f"Error loading custom CNN: {e}")
+        st.error(f"Failed to initialize ResPotholeNet: {e}")
         return None
 
 
@@ -98,6 +99,7 @@ def predict(frame: np.ndarray, conf: float, demo_mode: bool = DEMO_MODE) -> list
     detector = load_model()
     if detector is not None:
         return detector.predict(frame, conf_threshold=conf)
+    st.error("Model could not be loaded. Please ensure models/pothole_net.py and dependencies are installed.")
     return []
 
 
@@ -214,6 +216,7 @@ def to_h264(input_path: str, output_path: str) -> str:
         ffmpeg_exe,
         "-y",                        # overwrite output without asking
         "-i", input_path,
+        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",  # Pad to even dimensions for H.264/yuv420p compatibility
         "-vcodec", "libx264",
         "-pix_fmt", "yuv420p",
         "-crf", "23",                # quality (lower = better, 23 is sane default)
@@ -252,7 +255,11 @@ def cleanup_temp_dir():
     """Remove the session temp directory and all its contents."""
     temp_dir = st.session_state.get("temp_dir")
     if temp_dir and Path(temp_dir).exists():
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        st.session_state.pop("temp_dir", None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -282,7 +289,8 @@ def process_video(
     Returns
     -------
     dict with keys:
-        frames_processed  : int
+        frames_processed  : int   (total frames read and rendered)
+        frames_evaluated  : int   (frames on which the CNN actually ran)
         max_potholes      : int   (max detections in one frame — placeholder metric)
         processing_time_s : float
         detections_log    : list of {frame, timestamp_s, severity, score}
@@ -290,7 +298,7 @@ def process_video(
     Raises
     ------
     ValueError   for invalid / empty video
-    RuntimeError for exceeded duration limit
+    RuntimeError for exceeded duration limit or failed video writer initialization
     """
     cap    = None
     writer = None
@@ -326,14 +334,22 @@ def process_video(
         # ── VideoWriter ───────────────────────────────────────────────────────
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        if not writer.isOpened():
+            raise RuntimeError(
+                f"Could not open VideoWriter for {output_path} ({width}x{height} @ {fps:.1f}fps). "
+                "The mp4v codec may be unsupported on this host system."
+            )
 
         # ── Loop state ────────────────────────────────────────────────────────
         last_dets        = []   # enriched detections (with severity) reused on skips
         frames_read      = 0
-        frames_processed = 0
+        frames_evaluated = 0
         max_potholes     = 0
         detections_log   = []
         start_time       = time.perf_counter()
+
+        # Throttle progress callbacks (every ~2.5% of total frames) to prevent Streamlit UI choke
+        progress_throttle_step = max(1, total_frames // 40)
 
         # ── Frame loop ────────────────────────────────────────────────────────
         for frame_idx in range(total_frames):
@@ -364,7 +380,7 @@ def process_video(
                     enriched.append({**det, "severity": sev})
 
                 last_dets = enriched
-                frames_processed += 1
+                frames_evaluated += 1
 
                 # Log one entry per detection on this frame
                 timestamp_s = round(frame_idx / fps, 2)
@@ -383,9 +399,10 @@ def process_video(
             annotated = draw_boxes(frame, last_dets)
             writer.write(annotated)
 
-            # Progress callback (decoupled from Streamlit)
+            # Throttled progress callback
             if progress_callback is not None:
-                progress_callback((frame_idx + 1) / total_frames)
+                if frame_idx % progress_throttle_step == 0 or (frame_idx + 1) == total_frames:
+                    progress_callback((frame_idx + 1) / total_frames)
 
         # ── Guard: zero frames read ───────────────────────────────────────────
         if frames_read == 0:
@@ -397,7 +414,8 @@ def process_video(
         elapsed = time.perf_counter() - start_time
 
         return {
-            "frames_processed":  frames_processed,
+            "frames_processed":  frames_read,
+            "frames_evaluated":  frames_evaluated,
             "max_potholes":      max_potholes,
             "processing_time_s": round(elapsed, 2),
             "detections_log":    detections_log,
@@ -615,20 +633,19 @@ def render_sidebar() -> tuple:
         with st.expander("About the Model", expanded=False):
             st.markdown(
                 """
-                **ResPotholeNet Architecture (From Scratch)**
+                **Two-Stage Detection Architecture (R-CNN Paradigm)**
 
-                | Attribute | Specification |
-                |---|---|
-                | **Backbone** | Custom Residual Bottlenecks + SE Attention |
-                | **Attention** | Squeeze-and-Excitation (SE) Channel Attention |
-                | **Multi-scale** | Spatial Pyramid Pooling (SPPF) |
-                | **Parameters** | 858,245 parameters |
-                | **Pretrained** | **None** (100% custom from scratch) |
-                | **Loss** | Focal Loss + Smooth L1 Loss |
-                | **Dual Head** | Pothole Confidence + Bounding Box Regression |
+                | Stage | Component | Technical Specification |
+                |---|---|---|
+                | **Stage 1** | **Road ROI & Region Proposal** | Bilateral filter (9, 75, 75), adaptive thresholding, morphological open/close, aspect-ratio contour filters |
+                | **Stage 2** | **ResPotholeNet Classifier** | 3-stage Residual Bottlenecks with SE Attention + SPPF multi-scale pooling |
+                | **Decision** | **Primary Deep CNN Scorer** | Full veto power via ResPotholeNet sigmoid confidence [0, 1] |
+                | **Parameters** | **858,245 parameters** | 100% custom implementation (no transfer learning, no YOLO) |
+                | **Loss Function** | **Focal Loss + Smooth L1** | Focal loss (α=0.25, γ=2.0) addresses class imbalance vs pavement |
+                | **Input Size** | **128 × 128 patches** | Extracted candidate patches normalized with road surface distribution |
 
                 ---
-                **Course Compliance:** No YOLO, Ultralytics, torchvision, or transfer learning backbones used.
+                **Course Compliance:** No YOLO, Ultralytics, torchvision backbones, or pretrained weights used.
                 """
             )
 
@@ -642,6 +659,15 @@ def render_sidebar() -> tuple:
         if demo_mode:
             st.info("Demo Mode is active. Turn off when your CNN is connected.", icon="💡")
 
+        st.markdown("---")
+        if st.button("🧹 Clear Temp Files & Cache", use_container_width=True):
+            cleanup_temp_dir()
+            for k in ["video_result_path", "video_stats", "video_detections_log", "video_file_sig",
+                      "image_result_img", "image_detections_log", "image_file_sig", "use_sample_video"]:
+                st.session_state.pop(k, None)
+            st.success("Session temporary files cleared!")
+            st.rerun()
+
     return conf, every_n, demo_mode
 
 
@@ -649,12 +675,14 @@ def render_metric_cards(stats: dict):
     """Render 3 styled metric cards from a stats dict."""
     c1, c2, c3 = st.columns(3)
 
+    inferred = stats.get("frames_evaluated", stats["frames_processed"])
     with c1:
         st.markdown(
             f"""
             <div class="metric-card">
                 <div class="metric-label">Frames Processed</div>
                 <div class="metric-value">{stats['frames_processed']}</div>
+                <div class="metric-note">{inferred} evaluated by CNN</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -665,7 +693,7 @@ def render_metric_cards(stats: dict):
             <div class="metric-card">
                 <div class="metric-label">Max Potholes / Frame</div>
                 <div class="metric-value">{stats['max_potholes']}</div>
-                <div class="metric-note">Placeholder — add tracking to count unique potholes</div>
+                <div class="metric-note">Peak simultaneous detections</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -676,6 +704,7 @@ def render_metric_cards(stats: dict):
             <div class="metric-card">
                 <div class="metric-label">Processing Time</div>
                 <div class="metric-value">{stats['processing_time_s']}s</div>
+                <div class="metric-note">Total video pipeline runtime</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -683,12 +712,11 @@ def render_metric_cards(stats: dict):
 
 
 def render_detections_table(log: list):
-    """Render the detections log as a styled dataframe."""
+    """Render the detections log as a styled dataframe sorted chronologically."""
     st.markdown("#### Detections Log")
     if not log:
         st.info(
-            "No detections to display.  "
-            "Once your CNN is connected, each detected pothole will appear here.",
+            "No detections to display for this input.",
             icon="ℹ️",
         )
         return
@@ -698,23 +726,42 @@ def render_detections_table(log: list):
     df = pd.DataFrame(log)
     df.columns = ["Frame #", "Timestamp (s)", "Severity", "Confidence"]
 
-    severity_order = {"high": 0, "medium": 1, "low": 2}
-    df["_order"] = df["Severity"].map(severity_order)
-    df = df.sort_values("_order").drop(columns="_order").reset_index(drop=True)
+    # Maintain chronological order so potholes appear sequentially in time
+    try:
+        if df["Timestamp (s)"].iloc[0] != "N/A":
+            df["_ts"] = pd.to_numeric(df["Timestamp (s)"], errors="coerce").fillna(0)
+            df = df.sort_values("_ts").drop(columns=["_ts"]).reset_index(drop=True)
+    except Exception:
+        pass
 
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-def clear_results_if_new_file(file_obj):
-    """
-    Detect when a different file has been uploaded and wipe stale results
-    from session_state so they do not show for the new file.
-    """
-    file_id = id(file_obj)
-    if st.session_state.get("uploaded_file_id") != file_id:
-        for key in ["result_video_path", "result_image", "stats", "detections_log"]:
+def get_file_sig(file_obj) -> str:
+    """Generate a stable signature for an uploaded file using its name and size."""
+    if file_obj is None:
+        return ""
+    name = getattr(file_obj, "name", str(file_obj))
+    size = getattr(file_obj, "size", 0)
+    return f"{name}_{size}"
+
+
+def clear_video_results_if_new_file(file_obj):
+    """Wipe stale video results only when a new video file is uploaded."""
+    sig = get_file_sig(file_obj)
+    if st.session_state.get("video_file_sig") != sig:
+        for key in ["video_result_path", "video_stats", "video_detections_log"]:
             st.session_state.pop(key, None)
-        st.session_state["uploaded_file_id"] = file_id
+        st.session_state["video_file_sig"] = sig
+
+
+def clear_image_results_if_new_file(file_obj):
+    """Wipe stale image results only when a new image file is uploaded."""
+    sig = get_file_sig(file_obj)
+    if st.session_state.get("image_file_sig") != sig:
+        for key in ["image_result_img", "image_detections_log"]:
+            st.session_state.pop(key, None)
+        st.session_state["image_file_sig"] = sig
 
 
 # ─── VIDEO TAB ───────────────────────────────────────────────────────────────
@@ -742,13 +789,13 @@ def render_video_tab(conf: float, every_n: int, demo_mode: bool = DEMO_MODE):
             st.markdown("**Or test with sample video:**")
             if st.button("🎬 Use sample_pothole_video.mp4", use_container_width=True):
                 st.session_state["use_sample_video"] = True
-                for key in ["result_video_path", "result_image", "stats", "detections_log"]:
+                for key in ["video_result_path", "video_stats", "video_detections_log"]:
                     st.session_state.pop(key, None)
 
     active_video_path = None
     if uploaded is not None:
         st.session_state["use_sample_video"] = False
-        clear_results_if_new_file(uploaded)
+        clear_video_results_if_new_file(uploaded)
         temp_dir    = make_session_temp_dir()
         upload_path = str(temp_dir / f"input_{uploaded.name}")
         with open(upload_path, "wb") as f:
@@ -812,9 +859,9 @@ def render_video_tab(conf: float, every_n: int, demo_mode: bool = DEMO_MODE):
 
             # Persist in session_state so results survive reruns
             detections_log = stats.pop("detections_log", [])
-            st.session_state["result_video_path"] = h264_output
-            st.session_state["stats"]             = stats
-            st.session_state["detections_log"]    = detections_log
+            st.session_state["video_result_path"] = h264_output
+            st.session_state["video_stats"]       = stats
+            st.session_state["video_detections_log"] = detections_log
 
             progress_bar.progress(1.0, text="Done!")
             status_text.success("Detection complete!")
@@ -832,15 +879,15 @@ def render_video_tab(conf: float, every_n: int, demo_mode: bool = DEMO_MODE):
             return
 
     # Show results — persisted across reruns via session_state
-    if "result_video_path" in st.session_state:
-        result_path = st.session_state["result_video_path"]
+    if "video_result_path" in st.session_state:
+        result_path = st.session_state["video_result_path"]
 
         with col_det:
             st.markdown("**Detected**")
             st.video(result_path)
 
         st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-        render_metric_cards(st.session_state["stats"])
+        render_metric_cards(st.session_state["video_stats"])
 
         st.markdown("")
         with open(result_path, "rb") as f:
@@ -853,7 +900,7 @@ def render_video_tab(conf: float, every_n: int, demo_mode: bool = DEMO_MODE):
             )
 
         st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-        render_detections_table(st.session_state.get("detections_log", []))
+        render_detections_table(st.session_state.get("video_detections_log", []))
 
 
 # ─── IMAGE TAB ───────────────────────────────────────────────────────────────
@@ -880,7 +927,7 @@ def render_image_tab(conf: float, demo_mode: bool = DEMO_MODE):
         )
         return
 
-    clear_results_if_new_file(uploaded)
+    clear_image_results_if_new_file(uploaded)
 
     # Decode image
     file_bytes = np.frombuffer(uploaded.read(), dtype=np.uint8)
@@ -911,8 +958,8 @@ def render_image_tab(conf: float, demo_mode: bool = DEMO_MODE):
         with st.spinner("Running detection..."):
             try:
                 result = process_image(image_bgr, conf, demo_mode=demo_mode)
-                st.session_state["result_image"]   = result["annotated_image"]
-                st.session_state["detections_log"] = [
+                st.session_state["image_result_img"]     = result["annotated_image"]
+                st.session_state["image_detections_log"] = [
                     {
                         "frame":       "N/A",
                         "timestamp_s": "N/A",
@@ -925,17 +972,17 @@ def render_image_tab(conf: float, demo_mode: bool = DEMO_MODE):
                 st.error(f"Detection failed: {exc}")
                 return
 
-    if "result_image" in st.session_state:
+    if "image_result_img" in st.session_state:
         with col_det:
             st.markdown("**Detected**")
             st.image(
-                cv2.cvtColor(st.session_state["result_image"], cv2.COLOR_BGR2RGB),
+                cv2.cvtColor(st.session_state["image_result_img"], cv2.COLOR_BGR2RGB),
                 use_container_width=True,
             )
 
         st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
 
-        n_det = len(st.session_state.get("detections_log", []))
+        n_det = len(st.session_state.get("image_detections_log", []))
         c1, c2 = st.columns(2)
 
         with c1:
@@ -952,7 +999,7 @@ def render_image_tab(conf: float, demo_mode: bool = DEMO_MODE):
         # Save annotated image to temp dir for download
         temp_dir     = make_session_temp_dir()
         img_out_path = str(temp_dir / "detected_image.jpg")
-        cv2.imwrite(img_out_path, st.session_state["result_image"])
+        cv2.imwrite(img_out_path, st.session_state["image_result_img"])
 
         with c2:
             with open(img_out_path, "rb") as f:
@@ -965,7 +1012,7 @@ def render_image_tab(conf: float, demo_mode: bool = DEMO_MODE):
                 )
 
         st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-        render_detections_table(st.session_state.get("detections_log", []))
+        render_detections_table(st.session_state.get("image_detections_log", []))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1,7 +1,11 @@
 """
-Pothole Detection Engine using Custom CNN (ResPotholeNet)
-Combines deep feature extraction, road region-of-interest analysis, and IoU NMS.
-No pretrained backbones — 100% custom implementation.
+Two-Stage Road Pothole Detection Pipeline:
+- Stage 1: Road-surface Region Proposal (Bilateral filtering, adaptive thresholding,
+           morphological filtering, and perspective ROI contour grouping)
+- Stage 2: Deep Custom CNN (ResPotholeNet) Patch Classification & Verification
+
+Architecture paradigm: Region-based CNN (R-CNN), built 100% from scratch with pure PyTorch.
+No pretrained backbones or transfer learning weights used.
 """
 
 import cv2
@@ -13,7 +17,9 @@ from models.pothole_net import ResPotholeNet
 
 class PotholeDetector:
     """
-    Complete Pothole Detection Pipeline powered by ResPotholeNet.
+    Two-Stage Pothole Detection Engine.
+    Uses classical morphological region proposals (Stage 1) followed by
+    deep semantic verification with ResPotholeNet (Stage 2).
     """
     def __init__(self, weights_path: str = None, device: str = None):
         if device is None:
@@ -25,24 +31,16 @@ class PotholeDetector:
 
         if weights_path and Path(weights_path).exists():
             checkpoint = torch.load(weights_path, map_location=self.device)
-            if "model_state_dict" in checkpoint:
+            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
                 self.model.load_state_dict(checkpoint["model_state_dict"])
             else:
                 self.model.load_state_dict(checkpoint)
-            print(f"Loaded trained weights from {weights_path}")
+            print(f"Loaded trained ResPotholeNet weights from {weights_path}")
         else:
-            # Calibrate model weights for road distress edge-feature extraction
-            self._calibrate_weights()
+            print("Warning: No pre-trained weights loaded. Running with initialized weights.")
 
         self.model.float()
         self.model.eval()
-
-    def _calibrate_weights(self):
-        """Calibrate initial conv layers to act as high-sensitivity cavity edge filters."""
-        with torch.no_grad():
-            for name, param in self.model.named_parameters():
-                if "conv1.conv.weight" in name and param.dim() == 4:
-                    param.data = (param.data * 1.2).float()
 
     def extract_candidates(self, frame: np.ndarray) -> list:
         """
@@ -161,11 +159,9 @@ class PotholeDetector:
 
         detections = []
         for i, (bx1, by1, bx2, by2) in enumerate(valid_boxes):
-            # Combine deep CNN semantic score with structural contrast
+            # Deep CNN semantic confidence (ResPotholeNet is the primary decision-maker)
             raw_cnn = float(cnn_scores[i])
-            c_score = contrast_scores[i]
-            # Weighted hybrid score
-            final_score = float(np.clip(0.6 * c_score + 0.4 * raw_cnn + 0.25, 0.0, 0.98))
+            final_score = float(np.clip(raw_cnn, 0.0, 1.0))
 
             if final_score >= conf_threshold:
                 # Apply small boundary refinement from regressor head

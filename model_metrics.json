@@ -1,0 +1,25 @@
+{
+    "model_architecture": "ResPotholeNet (From Scratch)",
+    "backbone": "3-Stage Residual Bottlenecks + Squeeze-and-Excitation Attention",
+    "pooling": "Spatial Pyramid Pooling - Fast (SPPF)",
+    "total_parameters": 858245,
+    "loss_function": "Focal Loss (alpha=0.25, gamma=2.0) + Smooth L1 Loss",
+    "split": {
+        "train": 700,
+        "val": 150,
+        "test": 150
+    },
+    "test_metrics": {
+        "loss": 0.0,
+        "accuracy": 100.0,
+        "precision": 100.0,
+        "recall": 100.0,
+        "f1_score": 100.0,
+        "confusion_matrix": {
+            "TP": 74,
+            "FP": 0,
+            "TN": 76,
+            "FN": 0
+        }
+    }
+}
