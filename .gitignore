@@ -1,0 +1,18 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+venv/
+env/
+.env
+
+# Temporary data and OS files
+temp_videos/
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

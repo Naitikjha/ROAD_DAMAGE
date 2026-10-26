@@ -1,0 +1,2 @@
+[server]
+maxUploadSize = 200   # MB — matches MAX_UPLOAD_MB constant in app.py
