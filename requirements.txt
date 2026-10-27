@@ -1,6 +1,5 @@
-# Core ML
+# Core ML (pure PyTorch from scratch - no torchvision)
 torch>=2.0.0
-torchvision>=0.15.0
 
 # Computer Vision
 opencv-python>=4.8.0

@@ -1,51 +1,59 @@
 {
     "model_architecture": "ResPotholeNet (From Scratch)",
-    "backbone": "3-Stage Residual Bottlenecks + Squeeze-and-Excitation Attention",
-    "pooling": "Spatial Pyramid Pooling - Fast (SPPF)",
     "total_parameters": 858245,
     "loss_function": "Focal Loss (alpha=0.25, gamma=2.0)",
     "dataset": {
         "source": "data",
-        "type": "Real road images (no synthetic data)",
-        "total_images": 712
-    },
-    "split": {
-        "train": 498,
-        "val": 106,
-        "test": 108
+        "source_images": {
+            "unique_pothole_images": 362,
+            "unique_normal_images": 344,
+            "total_unique_images": 706,
+            "deduplication": "SHA-256 hash"
+        },
+        "split_method": "Split by source image file (Zero Leakage between train/val/test)",
+        "crop_method": "Shared Stage-1 morphological proposal extraction (detector.extract_stage1_candidates)",
+        "crops": {
+            "train_crops": 1222,
+            "val_crops": 258,
+            "test_crops": 266,
+            "total_crops": 1746
+        }
     },
     "training": {
         "epochs": 15,
-        "batch_size": 16,
+        "batch_size": 32,
         "learning_rate": 0.001,
         "optimizer": "AdamW (weight_decay=1e-4)",
         "scheduler": "CosineAnnealingLR",
-        "augmentation": "Random flip (H+V), brightness/contrast jitter, rotation (\u00b115\u00b0)"
+        "augmentation": "Horizontal flip, brightness/contrast jitter, rotation (+-15 deg). NO vertical flip."
     },
     "val_metrics": {
-        "loss": 0.0423,
-        "accuracy": 92.45,
-        "precision": 89.47,
-        "recall": 96.23,
-        "f1_score": 92.73,
+        "n": 258,
+        "loss": 0.0652,
+        "accuracy": 81.4,
+        "precision": 79.21,
+        "recall": 74.77,
+        "f1_score": 76.92,
         "confusion_matrix": {
-            "TP": 51,
-            "FP": 6,
-            "TN": 47,
-            "FN": 2
+            "TP": 80,
+            "FP": 21,
+            "TN": 130,
+            "FN": 27
         }
     },
     "test_metrics": {
-        "loss": 0.0243,
-        "accuracy": 92.59,
-        "precision": 90.74,
-        "recall": 94.23,
-        "f1_score": 92.45,
+        "n": 266,
+        "loss": 0.0549,
+        "accuracy": 87.59,
+        "precision": 85.19,
+        "recall": 84.4,
+        "f1_score": 84.79,
         "confusion_matrix": {
-            "TP": 49,
-            "FP": 5,
-            "TN": 51,
-            "FN": 3
+            "TP": 92,
+            "FP": 16,
+            "TN": 141,
+            "FN": 17
         }
-    }
+    },
+    "evaluation_scope": "Patch classification metrics on Stage-1 candidate proposals from unseen source images (n=266). Bounding boxes originate from Stage-1 classical OpenCV contours."
 }

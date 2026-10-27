@@ -53,9 +53,26 @@ The system uses a **two-stage pipeline**: classical computer vision generates re
 
 ### ⚠️ Evaluation Scope: Patch Classification vs. End-to-End Detection
 
-- **What the metrics measure:** The test metrics in [`model_metrics.json`](file:///d:/NAITIK/DL%20PROJECT/ROAD_POTHHOLE/model_metrics.json) (Accuracy: 92.59%, Precision: 90.74%, Recall: 94.23%, F1: 92.45%, n=108) measure the CNN's ability to classify **128 × 128 patches** as pothole vs. normal road.
+- **What the metrics measure:** The test metrics in [`model_metrics.json`](model_metrics.json) measure the CNN's ability to classify **128 × 128 candidate patches** as pothole vs. normal road.
 - **What they do not measure:** They do **not** represent end-to-end bounding box detection accuracy (e.g., mAP@0.5). Bounding boxes are proposed by Stage 1 OpenCV contours; the dataset provides image-level labels without ground-truth bounding box coordinates.
-- **Sample size sensitivity:** On n=108 test samples (52 positive), a single error shifts metrics by ~1%. All numbers should be interpreted in this context.
+- **Zero data leakage:** Source images are split into 70% Train / 15% Val / 15% Test *before* any crops are extracted. No crops from the same source photo ever cross partitions.
+
+#### Final Test Set Results (Held-Out Unseen Photos, n = 266 crops from 108 source images)
+
+| Metric | Test Set Value |
+|---|---|
+| **Accuracy** | **87.59%** |
+| **Precision** | **85.19%** |
+| **Recall** | **84.40%** |
+| **F1-Score** | **84.79%** |
+| **Loss (Focal Loss)** | **0.0549** |
+
+```
+Confusion Matrix (n = 266):
+                Predicted Pos   Predicted Neg
+  Actual Pos          92              17
+  Actual Neg          16             141
+```
 
 ---
 
@@ -63,8 +80,8 @@ The system uses a **two-stage pipeline**: classical computer vision generates re
 
 ### 1. Clone the Repository
 ```bash
-git clone <your-repo-url>
-cd ROAD_POTHHOLE
+git clone https://github.com/Naitikjha/ROAD_DAMAGE.git
+cd ROAD_DAMAGE
 ```
 
 ### 2. Install Dependencies
@@ -72,22 +89,27 @@ cd ROAD_POTHHOLE
 pip install -r requirements.txt
 ```
 
-### 3. Download the Dataset
-```bash
-# The dataset is auto-organized into data/potholes/ and data/normal/
-# Or clone manually:
-git clone --depth 1 https://github.com/anantSinghCross/pothole-detection-system-using-convolution-neural-networks.git temp_repo
-# Then run: python -c "see train.py instructions"
+### 3. Dataset Setup
+Organize your road photos into `data/potholes/` and `data/normal/`:
 ```
+data/
+├── potholes/   # Road photos containing potholes (.jpg / .png)
+└── normal/     # Clear pavement / road photos (.jpg / .png)
+```
+Dataset source: [anantSinghCross/pothole-detection-system](https://github.com/anantSinghCross/pothole-detection-system-using-convolution-neural-networks)
 
 ### 4. Train the Model
 ```bash
-python train.py --data_dir data --epochs 15 --batch_size 16
+python train.py --data_dir data --epochs 15 --batch_size 32
 ```
 
-This produces:
-- `pothole_cnn.pth` — best model weights (saved at highest validation F1)
-- `model_metrics.json` — test set evaluation report
+This pipeline:
+1. Deduplicates images via SHA-256 hash.
+2. Splits source photos into 70% Train / 15% Val / 15% Test.
+3. Extracts domain-aligned 128×128 crops using Stage-1 candidate proposals (`extract_stage1_candidates`).
+4. Trains ResPotholeNet from scratch with Focal Loss and Cosine Annealing.
+5. Evaluates on the held-out, unseen test crops and saves metrics to `model_metrics.json`.
+6. Saves best model weights to `pothole_cnn.pth`.
 
 ### 5. Run the Application
 ```bash
@@ -124,8 +146,8 @@ Open **`http://localhost:8501`** in your browser.
 
 ## ⚠️ Known Limitations
 
-- **Patch Classification vs. Detection Accuracy**: The 92.45% F1 score evaluates whether the CNN correctly identifies a 128×128 crop as a pothole or clear road patch. It does not measure whole-frame object detection accuracy (mAP), because the bounding boxes are derived from Stage 1 OpenCV morphological contours rather than ground-truth annotated boxes.
-- **Sample Size Sensitivity**: Held-out test set size is n = 108 crops (52 pothole, 56 normal); a single misclassification moves the accuracy/F1 score by ~1%.
+- **Patch Classification vs. Detection Accuracy**: The 84.79% F1 score evaluates whether the CNN correctly identifies a 128×128 candidate crop as a pothole or clear road patch on unseen test images. It does not measure whole-frame object detection accuracy (mAP), because the bounding boxes are derived from Stage 1 OpenCV morphological contours rather than ground-truth annotated boxes.
+- **Sample Size**: Held-out test partition evaluates n = 266 crops from 108 unseen source images (109 positive, 157 negative).
 - **ROI Hardcoded**: Stage 1 inspects the lower 48% of the frame, which assumes standard forward-facing dashcam perspective. It may miss hazards on tilted or cropped angles.
 - **No Tracking Across Frames**: Counts reflect detections per evaluated frame rather than unique persistent potholes.
 - **Regression Head Unused at Inference**: The model retains its bounding box regression architecture for academic parity, but inference uses Stage 1 contours directly to avoid synthetic anchor mismatches.

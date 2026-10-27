@@ -2,23 +2,18 @@
 Training and Evaluation Pipeline for ResPotholeNet Custom CNN (From Scratch)
 Course Project: Two-Stage Pothole Detection from Road Videos Using Custom CNN
 
-IMPORTANT: Domain alignment
-  At inference, the CNN receives 128×128 CROPS that Stage 1 proposes from a
-  video frame — not full scene photos.  To match that, this script:
-    1. Reads each source image.
-    2. Resizes it so the shorter side is 256-320 px (preserving aspect ratio).
-    3. Extracts multiple random 128×128 CROPS (not a full-image resize).
-    4. For negative images, also runs Stage-1-style proposals and adds
-       any crops as hard negatives (shadows, cracks, oil stains, etc.).
-  This ensures the CNN trains on the same kind of input it will see at
-  inference time.
-
-Dataset expected structure:
-    data_dir/
-      potholes/  (or positive/) -> real pothole road patches
-      normal/    (or negative/ or plain/ or clear/) -> clear road patches
-
-NO synthetic / fake data.  If no real dataset is provided the script exits.
+Domain-Aligned Pipeline with Zero Data Leakage:
+  1. Source image deduplication: Exact duplicate photos removed via SHA-256 hash.
+  2. Source-level split: 70% Train / 15% Validation / 15% Test performed on SOURCE IMAGES.
+     Crops from the same image NEVER appear in both training and testing.
+  3. Shared Stage-1 Candidate Extraction:
+     Both positive and negative training crops are generated using the exact same
+     Stage-1 morphological proposal logic (detector.extract_stage1_candidates + extract_crop):
+       - Positive images -> Stage 1 crater proposals (potholes)
+       - Negative images -> Stage 1 false-alarm proposals (shadows, cracks, stains) + pavement
+     Ensures the CNN is trained on the exact patch distribution it encounters at inference.
+  4. Augmentation: Horizontal flip, brightness/contrast jitter, slight rotation (no vertical flip).
+  5. Metrics: Evaluated on unseen test crops with explicit sample counts (n).
 """
 
 import os
@@ -26,21 +21,25 @@ import json
 import hashlib
 import argparse
 from pathlib import Path
-import numpy as np
+from typing import List, Tuple
+
 import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, random_split
-from models.pothole_net import ResPotholeNet
+from torch.utils.data import Dataset, DataLoader
+
+from models.pothole_net import ResPotholeNet, count_parameters
+from detector import extract_stage1_candidates, extract_crop, normalize_patch
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Utilities
+#  File Deduplication and Splitting
 # ─────────────────────────────────────────────────────────────────────────────
 
 def file_hash(path: str) -> str:
-    """SHA-256 of the raw file bytes (for deduplication)."""
+    """SHA-256 of the raw file bytes for deduplication."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
@@ -48,172 +47,120 @@ def file_hash(path: str) -> str:
     return h.hexdigest()
 
 
-def resize_short_side(img: np.ndarray, target: int = 288) -> np.ndarray:
-    """Resize so the shorter side equals `target`, preserving aspect ratio."""
-    h, w = img.shape[:2]
-    if h < w:
-        new_h = target
-        new_w = int(w * target / h)
-    else:
-        new_w = target
-        new_h = int(h * target / w)
-    return cv2.resize(img, (new_w, new_h))
+def deduplicate_files(paths: List[Path]) -> List[Path]:
+    """Filter out duplicate files using SHA-256 hash."""
+    seen_hashes = set()
+    unique = []
+    for p in paths:
+        h = file_hash(str(p))
+        if h not in seen_hashes:
+            seen_hashes.add(h)
+            unique.append(p)
+    return unique
 
 
-def extract_random_crops(img: np.ndarray, crop_size: int = 128,
-                         n_crops: int = 3, rng: np.random.RandomState = None) -> list:
-    """Take `n_crops` random 128×128 patches from `img`."""
-    if rng is None:
-        rng = np.random.RandomState()
-    h, w = img.shape[:2]
-    if h < crop_size or w < crop_size:
-        return [cv2.resize(img, (crop_size, crop_size))]
-    crops = []
-    for _ in range(n_crops):
-        y = rng.randint(0, h - crop_size + 1)
-        x = rng.randint(0, w - crop_size + 1)
-        crops.append(img[y:y + crop_size, x:x + crop_size])
-    return crops
-
-
-def extract_stage1_proposals(img: np.ndarray, crop_size: int = 128) -> list:
+def split_source_images(
+    pos_files: List[Path],
+    neg_files: List[Path],
+    train_ratio: float = 0.70,
+    val_ratio: float = 0.15,
+    seed: int = 42,
+) -> Tuple[List[Path], List[Path], List[Path], List[Path], List[Path], List[Path]]:
     """
-    Run a simplified Stage-1 pipeline on an image and return proposal crops.
-    Used to generate hard-negative training patches from normal-road images.
+    Split source images into train, validation, and test sets.
+    Splitting occurs BEFORE crop generation to prevent cross-partition leakage.
     """
-    h, w = img.shape[:2]
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l_chan = lab[:, :, 0]
-    blurred = cv2.bilateralFilter(l_chan, 9, 75, 75)
-    thresh = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-        cv2.THRESH_BINARY_INV, 31, 10
-    )
-    k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    cleaned = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, k_open)
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, k_close)
-    contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    rng = np.random.RandomState(seed)
+    pos_shuffled = list(pos_files)
+    neg_shuffled = list(neg_files)
+    rng.shuffle(pos_shuffled)
+    rng.shuffle(neg_shuffled)
 
-    crops = []
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if 200 < area < (h * w * 0.3):
-            bx, by, bw, bh = cv2.boundingRect(cnt)
-            aspect = bw / float(bh) if bh > 0 else 0
-            if 0.3 < aspect < 5.0:
-                pad_x = int(bw * 0.1)
-                pad_y = int(bh * 0.1)
-                x1 = max(0, bx - pad_x)
-                y1 = max(0, by - pad_y)
-                x2 = min(w, bx + bw + pad_x)
-                y2 = min(h, by + bh + pad_y)
-                patch = img[y1:y2, x1:x2]
-                if patch.shape[0] >= 8 and patch.shape[1] >= 8:
-                    crops.append(cv2.resize(patch, (crop_size, crop_size)))
-    return crops
+    def partition(files: List[Path]):
+        n = len(files)
+        n_train = int(n * train_ratio)
+        n_val = int(n * val_ratio)
+        return files[:n_train], files[n_train:n_train + n_val], files[n_train + n_val:]
+
+    train_pos, val_pos, test_pos = partition(pos_shuffled)
+    train_neg, val_neg, test_neg = partition(neg_shuffled)
+    return train_pos, val_pos, test_pos, train_neg, val_neg, test_neg
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Dataset
+#  Dataset: Stage-1 Crop Road Dataset
 # ─────────────────────────────────────────────────────────────────────────────
 
-class CropBasedRoadDataset(Dataset):
+class Stage1RoadPatchDataset(Dataset):
     """
-    Builds a training set of 128×128 CROPS from source images,
-    matching the kind of input the CNN receives at inference.
-
-    For pothole images → random crops (the whole image is a pothole scene).
-    For normal images  → random crops + Stage-1 hard-negative proposals.
+    Dataset composed of 128x128 crops generated via Stage-1 proposals.
+    Both positive and negative samples share the same Stage-1 candidate framing.
     """
 
-    def __init__(self, data_dir: str, patch_size: int = 128,
-                 crops_per_image: int = 3, include_hard_negatives: bool = True,
-                 augment: bool = False, seed: int = 42):
+    def __init__(
+        self,
+        pos_files: List[Path],
+        neg_files: List[Path],
+        patch_size: int = 128,
+        augment: bool = False,
+        seed: int = 42,
+    ):
         self.patch_size = patch_size
         self.augment = augment
-        self.samples = []  # list of (crop: np.ndarray, label: float)
-
-        data_path = Path(data_dir)
-        pothole_dirs = ["potholes", "pothole", "positive", "Pothole"]
-        normal_dirs = ["normal", "clear", "negative", "pavement", "plain", "Plain"]
+        self.samples = []  # List of (crop_bgr: np.ndarray, label: float)
 
         rng = np.random.RandomState(seed)
 
-        # Collect all image paths with labels
-        pos_paths = []
-        neg_paths = []
-
-        for pd in pothole_dirs:
-            p_path = data_path / pd
-            if p_path.exists():
-                for ext in ["*.jpg", "*.jpeg", "*.png"]:
-                    pos_paths.extend(list(p_path.glob(ext)))
-
-        for nd in normal_dirs:
-            n_path = data_path / nd
-            if n_path.exists():
-                for ext in ["*.jpg", "*.jpeg", "*.png"]:
-                    neg_paths.extend(list(n_path.glob(ext)))
-
-        if len(pos_paths) + len(neg_paths) == 0:
-            raise FileNotFoundError(
-                f"No images found in '{data_dir}'. Expected subfolders like "
-                "'potholes/' and 'normal/' containing .jpg/.png images."
-            )
-
-        # Deduplicate by file hash
-        seen_hashes = set()
-        unique_pos, unique_neg = [], []
-        dupes = 0
-        for paths, unique_list in [(pos_paths, unique_pos), (neg_paths, unique_neg)]:
-            for p in paths:
-                h = file_hash(str(p))
-                if h not in seen_hashes:
-                    seen_hashes.add(h)
-                    unique_list.append(p)
-                else:
-                    dupes += 1
-
-        if dupes > 0:
-            print(f"  Removed {dupes} duplicate images (by SHA-256 hash)")
-
-        print(f"  Unique images: {len(unique_pos)} pothole + {len(unique_neg)} normal")
-
-        # Generate crops from positive images
-        for img_path in unique_pos:
-            img = cv2.imread(str(img_path))
+        # 1. Positive samples: Extract Stage-1 candidate proposals from pothole images
+        for path in pos_files:
+            img = cv2.imread(str(path))
             if img is None:
                 continue
-            img = resize_short_side(img, target=rng.randint(256, 321))
-            crops = extract_random_crops(img, patch_size, crops_per_image, rng)
-            for c in crops:
-                self.samples.append((c, 1.0))
 
-        # Generate crops from negative images
-        for img_path in unique_neg:
-            img = cv2.imread(str(img_path))
+            # Shared Stage-1 candidate proposals (without horizon ROI crop)
+            boxes = extract_stage1_candidates(img, use_roi=False)
+            if boxes:
+                # Top proposals correspond to largest depressions/crater contours
+                for box in boxes[:2]:
+                    crop = extract_crop(img, box, crop_size=patch_size, pad_ratio=0.1)
+                    if crop is not None:
+                        self.samples.append((crop, 1.0))
+            else:
+                # Fallback: center crop if no contour met threshold
+                h, w = img.shape[:2]
+                cs = min(h, w, 256)
+                cy, cx = h // 2, w // 2
+                patch = img[max(0, cy - cs // 2):min(h, cy + cs // 2),
+                            max(0, cx - cs // 2):min(w, cx + cs // 2)]
+                if patch.size > 0:
+                    self.samples.append((cv2.resize(patch, (patch_size, patch_size)), 1.0))
+
+        # 2. Negative samples: Extract Stage-1 false alarms (shadows, cracks) + pavement
+        for path in neg_files:
+            img = cv2.imread(str(path))
             if img is None:
                 continue
-            img = resize_short_side(img, target=rng.randint(256, 321))
-            # Random crops
-            crops = extract_random_crops(img, patch_size, crops_per_image, rng)
-            for c in crops:
-                self.samples.append((c, 0.0))
-            # Hard negatives from Stage 1 proposals
-            if include_hard_negatives:
-                hard_negs = extract_stage1_proposals(img, patch_size)
-                for hn in hard_negs[:2]:  # limit per image
-                    self.samples.append((hn, 0.0))
 
-        # Shuffle deterministically
+            h, w = img.shape[:2]
+            # Shared Stage-1 candidate proposals on normal roads
+            boxes = extract_stage1_candidates(img, use_roi=False)
+            for box in boxes[:2]:
+                crop = extract_crop(img, box, crop_size=patch_size, pad_ratio=0.1)
+                if crop is not None:
+                    self.samples.append((crop, 0.0))
+
+            # Include clean pavement patch
+            if h >= patch_size and w >= patch_size:
+                y = rng.randint(0, h - patch_size + 1)
+                x = rng.randint(0, w - patch_size + 1)
+                self.samples.append((img[y:y + patch_size, x:x + patch_size], 0.0))
+            else:
+                self.samples.append((cv2.resize(img, (patch_size, patch_size)), 0.0))
+
+        # Shuffle deterministic
         indices = list(range(len(self.samples)))
         rng.shuffle(indices)
         self.samples = [self.samples[i] for i in indices]
-
-        n_pos = sum(1 for _, l in self.samples if l == 1.0)
-        n_neg = len(self.samples) - n_pos
-        print(f"  Total crops: {n_pos} pothole + {n_neg} normal = {len(self.samples)}")
 
     def __len__(self):
         return len(self.samples)
@@ -221,13 +168,13 @@ class CropBasedRoadDataset(Dataset):
     def __getitem__(self, idx: int):
         crop, label = self.samples[idx]
 
-        # Data augmentation (only horizontal flip + brightness — no vertical flip)
+        # Augmentation (only horizontal flip, brightness/contrast, rotation — NO vertical flip)
         if self.augment:
             if np.random.rand() > 0.5:
                 crop = cv2.flip(crop, 1)  # horizontal flip only
             if np.random.rand() > 0.5:
-                alpha = np.random.uniform(0.8, 1.2)
-                beta = np.random.randint(-20, 20)
+                alpha = np.random.uniform(0.85, 1.15)
+                beta = np.random.randint(-15, 15)
                 crop = cv2.convertScaleAbs(crop, alpha=alpha, beta=beta)
             if np.random.rand() > 0.5:
                 angle = np.random.uniform(-15, 15)
@@ -235,24 +182,21 @@ class CropBasedRoadDataset(Dataset):
                 M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
                 crop = cv2.warpAffine(crop, M, (w, h), borderMode=cv2.BORDER_REFLECT)
 
-        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        mean = np.array([0.45, 0.45, 0.45], dtype=np.float32)
-        std = np.array([0.22, 0.22, 0.22], dtype=np.float32)
-        rgb = (rgb - mean) / std
-
-        tensor = torch.from_numpy(rgb).permute(2, 0, 1).float()
+        # Normalize with shared function
+        norm = normalize_patch(crop)
+        tensor = torch.from_numpy(norm).permute(2, 0, 1).float()
         label_tensor = torch.tensor([label], dtype=torch.float32)
         return tensor, label_tensor
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Loss
+#  Loss Function
 # ─────────────────────────────────────────────────────────────────────────────
 
 class FocalLoss(nn.Module):
     """
-    Standard Focal Loss for binary classification.
-    alpha weights the positive class, (1 - alpha) weights the negative class.
+    Focal Loss for binary classification.
+    alpha weights positive class, (1 - alpha) weights negative class.
     """
     def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
         super().__init__()
@@ -273,10 +217,7 @@ class FocalLoss(nn.Module):
 
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device,
              threshold: float = 0.5) -> dict:
-    """
-    Evaluate model on a dataset partition.
-    Returns precision, recall, F1, accuracy, loss, confusion matrix, and n.
-    """
+    """Evaluate model on a DataLoader partition."""
     model.eval()
     tp = fp = tn = fn = 0
     total_loss = 0.0
@@ -325,99 +266,86 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Training pipeline
+#  Training Pipeline
 # ─────────────────────────────────────────────────────────────────────────────
-
-class AugmentedSubset(Dataset):
-    """Wraps a subset of CropBasedRoadDataset with augmentation enabled."""
-    def __init__(self, full_dataset: CropBasedRoadDataset, indices: list):
-        self.full_dataset = full_dataset
-        self.indices = indices
-
-    def __len__(self):
-        return len(self.indices)
-
-    def __getitem__(self, idx):
-        real_idx = self.indices[idx]
-        crop, label = self.full_dataset.samples[real_idx]
-
-        # Augmentation (horizontal flip + brightness/contrast + rotation)
-        if np.random.rand() > 0.5:
-            crop = cv2.flip(crop, 1)
-        if np.random.rand() > 0.5:
-            alpha = np.random.uniform(0.8, 1.2)
-            beta = np.random.randint(-20, 20)
-            crop = cv2.convertScaleAbs(crop, alpha=alpha, beta=beta)
-        if np.random.rand() > 0.5:
-            angle = np.random.uniform(-15, 15)
-            h, w = crop.shape[:2]
-            M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
-            crop = cv2.warpAffine(crop, M, (w, h), borderMode=cv2.BORDER_REFLECT)
-
-        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        mean = np.array([0.45, 0.45, 0.45], dtype=np.float32)
-        std = np.array([0.22, 0.22, 0.22], dtype=np.float32)
-        rgb = (rgb - mean) / std
-
-        tensor = torch.from_numpy(rgb).permute(2, 0, 1).float()
-        label_tensor = torch.tensor([label], dtype=torch.float32)
-        return tensor, label_tensor
-
 
 def train_pipeline(
     data_dir: str = "data",
     epochs: int = 15,
-    batch_size: int = 16,
-    lr: float = 1e-3,
+    batch_size: int = 32,
+    lr: float = 0.001,
     save_path: str = "pothole_cnn.pth",
-    metrics_path: str = "model_metrics.json"
+    metrics_path: str = "model_metrics.json",
+    seed: int = 42,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training ResPotholeNet on {device}...")
+    print(f"Using compute device: {device}")
 
-    # --- Load REAL dataset (no synthetic fallback) ---
     data_path = Path(data_dir)
-    if not data_path.exists():
-        print(f"\nERROR: Dataset directory '{data_dir}' not found!")
-        print("Please download a real pothole dataset and organize it as:")
-        print(f"  {data_dir}/")
-        print(f"    potholes/   <- pothole road images (.jpg/.png)")
-        print(f"    normal/     <- clear road images (.jpg/.png)")
-        print("\nRecommended datasets:")
-        print("  - https://github.com/anantSinghCross/pothole-detection-system-using-convolution-neural-networks")
+    pothole_dirs = ["potholes", "pothole", "positive", "Pothole"]
+    normal_dirs = ["normal", "clear", "negative", "pavement", "plain", "Plain"]
+
+    pos_paths = []
+    neg_paths = []
+    for pd in pothole_dirs:
+        p_path = data_path / pd
+        if p_path.exists():
+            for ext in ["*.jpg", "*.jpeg", "*.png"]:
+                pos_paths.extend(list(p_path.glob(ext)))
+    for nd in normal_dirs:
+        n_path = data_path / nd
+        if n_path.exists():
+            for ext in ["*.jpg", "*.jpeg", "*.png"]:
+                neg_paths.extend(list(n_path.glob(ext)))
+
+    if len(pos_paths) == 0 or len(neg_paths) == 0:
+        print(f"\nERROR: Real road dataset not found in '{data_dir}/'")
+        print("Expected structure:")
+        print("  data/")
+        print("    potholes/  <- pothole road images")
+        print("    normal/    <- clear road pavement images")
         return
 
-    print("Building crop-based dataset (domain-aligned with Stage-1 inference)...")
-    full_dataset = CropBasedRoadDataset(
-        data_dir, patch_size=128, crops_per_image=3,
-        include_hard_negatives=True, augment=False, seed=42
+    # Deduplicate source images
+    unique_pos = deduplicate_files(pos_paths)
+    unique_neg = deduplicate_files(neg_paths)
+    dupes_pos = len(pos_paths) - len(unique_pos)
+    dupes_neg = len(neg_paths) - len(unique_neg)
+    if dupes_pos + dupes_neg > 0:
+        print(f"Removed {dupes_pos + dupes_neg} duplicate images via SHA-256 hash.")
+    print(f"Unique source images: {len(unique_pos)} pothole + {len(unique_neg)} normal = {len(unique_pos) + len(unique_neg)}")
+
+    # Split SOURCE IMAGES first (Zero Data Leakage)
+    train_pos, val_pos, test_pos, train_neg, val_neg, test_neg = split_source_images(
+        unique_pos, unique_neg, train_ratio=0.70, val_ratio=0.15, seed=seed
     )
+    print(f"Source Image Split:")
+    print(f"  Train: {len(train_pos)} pos + {len(train_neg)} neg = {len(train_pos) + len(train_neg)}")
+    print(f"  Val:   {len(val_pos)} pos + {len(val_neg)} neg = {len(val_pos) + len(val_neg)}")
+    print(f"  Test:  {len(test_pos)} pos + {len(test_neg)} neg = {len(test_pos) + len(test_neg)}")
 
-    # 70% Train, 15% Validation, 15% Test split
-    n_total = len(full_dataset)
-    n_train = int(0.70 * n_total)
-    n_val = int(0.15 * n_total)
-    n_test = n_total - n_train - n_val
+    print("\nExtracting Stage-1 aligned crops for each split independently...")
+    train_dataset = Stage1RoadPatchDataset(train_pos, train_neg, patch_size=128, augment=True, seed=seed)
+    val_dataset = Stage1RoadPatchDataset(val_pos, val_neg, patch_size=128, augment=False, seed=seed)
+    test_dataset = Stage1RoadPatchDataset(test_pos, test_neg, patch_size=128, augment=False, seed=seed)
 
-    train_set, val_set, test_set = random_split(
-        full_dataset, [n_train, n_val, n_test],
-        generator=torch.Generator().manual_seed(42)
-    )
+    print(f"Crop Dataset Counts:")
+    print(f"  Train crops: {len(train_dataset)}")
+    print(f"  Val crops:   {len(val_dataset)}")
+    print(f"  Test crops:  {len(test_dataset)}")
 
-    train_aug_dataset = AugmentedSubset(full_dataset, train_set.indices)
-    train_loader = DataLoader(train_aug_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
-
-    print(f"Dataset Split: Train={n_train} | Val={n_val} | Test={n_test}")
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     model = ResPotholeNet(in_channels=3).to(device)
     cls_criterion = FocalLoss(alpha=0.25, gamma=2.0)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    best_val_f1 = 0.0
+    best_val_f1 = -1.0
 
+    print(f"\nTraining ResPotholeNet for {epochs} epochs on {device}...")
     for epoch in range(1, epochs + 1):
         model.train()
         total_cls_loss = 0.0
@@ -440,26 +368,25 @@ def train_pipeline(
 
         val_metrics = evaluate(model, val_loader, device)
         avg_train_loss = total_cls_loss / max(num_batches, 1)
-        print(f"Epoch [{epoch}/{epochs}] — "
+        print(f"Epoch [{epoch:02d}/{epochs:02d}] — "
               f"Train Loss: {avg_train_loss:.4f} | "
               f"Val Acc: {val_metrics['accuracy']}% | "
               f"Val P: {val_metrics['precision']}% | "
               f"Val R: {val_metrics['recall']}% | "
-              f"Val F1: {val_metrics['f1_score']}% "
-              f"(n={val_metrics['n']})")
+              f"Val F1: {val_metrics['f1_score']}% (n={val_metrics['n']})")
 
         if val_metrics["f1_score"] >= best_val_f1:
             best_val_f1 = val_metrics["f1_score"]
             torch.save(model.state_dict(), save_path)
-            print(f"  -> Saved best model (Val F1={best_val_f1}%)")
+            print(f"  -> Saved best weights (Val F1={best_val_f1}%)")
 
     print(f"\nTraining Complete! Best model saved to: {save_path}")
 
-    # Reload best weights for final test evaluation
+    # Reload best weights for rigorous final evaluation on unseen test partition
     model.load_state_dict(torch.load(save_path, map_location=device))
 
     print("\n" + "=" * 60)
-    print("     FINAL TEST SET EVALUATION (Patch Classification)")
+    print("     FINAL TEST SET EVALUATION (Unseen Source Images)")
     print("=" * 60)
     test_metrics = evaluate(model, test_loader, device)
     cm = test_metrics["confusion_matrix"]
@@ -475,56 +402,67 @@ def train_pipeline(
     print(f"    Actual Pos        {cm['TP']:>4}            {cm['FN']:>4}")
     print(f"    Actual Neg        {cm['FP']:>4}            {cm['TN']:>4}")
     print("=" * 60)
-    print("\n  NOTE: These are PATCH CLASSIFICATION metrics — they measure")
-    print("  whether the CNN correctly classifies 128×128 crops.")
-    print("  They do NOT measure end-to-end detection accuracy")
-    print("  (which depends on Stage 1 proposal quality).")
+    print("\n  NOTE: Evaluated on crops from source photos that were NEVER seen in training.")
+    print("  Measures patch classification accuracy on Stage-1 candidate proposals.")
 
     val_final = evaluate(model, val_loader, device)
 
-    from models.pothole_net import count_parameters
     report = {
         "model_architecture": "ResPotholeNet (From Scratch)",
         "total_parameters": count_parameters(model),
         "loss_function": "Focal Loss (alpha=0.25, gamma=2.0)",
         "dataset": {
             "source": str(data_dir),
-            "type": "Random 128x128 crops from real road images (domain-aligned with Stage 1)",
-            "source_images": "~712 real photos",
-            "training_crops": n_total,
-            "includes_hard_negatives": True,
-            "deduplication": "SHA-256 hash (no near-duplicates in train/test)",
+            "source_images": {
+                "unique_pothole_images": len(unique_pos),
+                "unique_normal_images": len(unique_neg),
+                "total_unique_images": len(unique_pos) + len(unique_neg),
+                "deduplication": "SHA-256 hash"
+            },
+            "split_method": "Split by source image file (Zero Leakage between train/val/test)",
+            "crop_method": "Shared Stage-1 morphological proposal extraction (detector.extract_stage1_candidates)",
+            "crops": {
+                "train_crops": len(train_dataset),
+                "val_crops": len(val_dataset),
+                "test_crops": len(test_dataset),
+                "total_crops": len(train_dataset) + len(val_dataset) + len(test_dataset),
+            }
         },
-        "split": {"train": n_train, "val": n_val, "test": n_test},
         "training": {
             "epochs": epochs,
             "batch_size": batch_size,
             "learning_rate": lr,
             "optimizer": "AdamW (weight_decay=1e-4)",
             "scheduler": "CosineAnnealingLR",
-            "augmentation": "Horizontal flip, brightness/contrast jitter, rotation (±15°). NO vertical flip.",
+            "augmentation": "Horizontal flip, brightness/contrast jitter, rotation (+-15 deg). NO vertical flip.",
         },
         "val_metrics": val_final,
         "test_metrics": test_metrics,
-        "metric_note": (
-            "These are PATCH CLASSIFICATION metrics (can the CNN correctly classify "
-            "128x128 crops). They do NOT measure end-to-end detection accuracy, "
-            "which also depends on Stage 1 proposal quality."
+        "evaluation_scope": (
+            "Patch classification metrics on Stage-1 candidate proposals from unseen source images (n="
+            + str(test_metrics['n']) + "). Bounding boxes originate from Stage-1 classical OpenCV contours."
         ),
     }
+
     with open(metrics_path, "w") as f:
         json.dump(report, f, indent=4)
     print(f"\nEvaluation report saved to: {metrics_path}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train and evaluate ResPotholeNet")
+    parser = argparse.ArgumentParser(description="Train and evaluate ResPotholeNet on domain-aligned Stage-1 crops")
     parser.add_argument("--data_dir", type=str, default="data",
-                        help="Path to real road dataset (must have potholes/ and normal/ subdirs)")
-    parser.add_argument("--epochs", type=int, default=15, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--save_path", type=str, default="pothole_cnn.pth", help="Path to save weights")
+                        help="Path to dataset directory (containing potholes/ and normal/)")
+    parser.add_argument("--epochs", type=int, default=15,
+                        help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=32,
+                        help="Mini-batch size")
+    parser.add_argument("--lr", type=float, default=0.001,
+                        help="Initial learning rate for AdamW")
+    parser.add_argument("--save_path", type=str, default="pothole_cnn.pth",
+                        help="Destination file for best model checkpoint")
+    parser.add_argument("--metrics_path", type=str, default="model_metrics.json",
+                        help="Destination file for evaluation metrics JSON report")
     args = parser.parse_args()
 
     train_pipeline(
@@ -533,4 +471,5 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         lr=args.lr,
         save_path=args.save_path,
+        metrics_path=args.metrics_path,
     )

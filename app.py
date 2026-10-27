@@ -637,7 +637,7 @@ def render_sidebar() -> tuple:
 
                 ---
                 **Note:** Stage 1 proposes candidate regions; Stage 2 (CNN) is the sole decision maker.
-                The bbox regression head is unused at inference (see report). Test metrics represent patch classification (n=108), not end-to-end mAP.
+                The bbox regression head is unused at inference (see report). Test metrics represent patch classification (84.79% F1, n=266 crops from 108 unseen photos), not end-to-end mAP.
                 **Course Compliance:** No YOLO, Ultralytics, torchvision backbones, or pretrained weights.
                 """
             )
