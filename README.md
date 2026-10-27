@@ -113,7 +113,7 @@ This pipeline:
 
 ### 5. Run the Application
 ```bash
-streamlit run app.py
+python -m streamlit run app.py
 ```
 Open **`http://localhost:8501`** in your browser.
 
