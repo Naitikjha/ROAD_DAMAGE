@@ -1,10 +1,14 @@
 """
 Two-Stage Road Pothole Detection Pipeline:
-- Stage 1: Road-surface Region Proposal (Bilateral filtering, adaptive thresholding,
+- Stage 1: Classical Region Proposals (Bilateral filtering, adaptive thresholding,
            morphological filtering, and perspective ROI contour grouping)
-- Stage 2: Deep Custom CNN (ResPotholeNet) Patch Classification & Verification
+- Stage 2: ResPotholeNet CNN Patch Classification (sole decision maker)
 
-Architecture paradigm: Region-based CNN (R-CNN), built 100% from scratch with pure PyTorch.
+Architecture: Classical region proposals + custom CNN binary classifier.
+The CNN confidence score is the ONLY factor in accept/reject decisions.
+The bounding box regression head is NOT used at inference (training/inference
+target mismatch — see project report for ablation discussion).
+
 No pretrained backbones or transfer learning weights used.
 """
 
@@ -18,8 +22,8 @@ from models.pothole_net import ResPotholeNet
 class PotholeDetector:
     """
     Two-Stage Pothole Detection Engine.
-    Uses classical morphological region proposals (Stage 1) followed by
-    deep semantic verification with ResPotholeNet (Stage 2).
+    Stage 1: Classical morphological region proposals.
+    Stage 2: ResPotholeNet CNN binary classifier (sole decision maker).
     """
     def __init__(self, weights_path: str = None, device: str = None):
         if device is None:
@@ -30,37 +34,40 @@ class PotholeDetector:
         self.model = ResPotholeNet(in_channels=3).to(self.device).float()
 
         if weights_path and Path(weights_path).exists():
-            checkpoint = torch.load(weights_path, map_location=self.device)
+            checkpoint = torch.load(weights_path, map_location=self.device,
+                                    weights_only=True)
             if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
                 self.model.load_state_dict(checkpoint["model_state_dict"])
             else:
                 self.model.load_state_dict(checkpoint)
             print(f"Loaded trained ResPotholeNet weights from {weights_path}")
         else:
-            print("Warning: No pre-trained weights loaded. Running with initialized weights.")
+            raise FileNotFoundError(
+                f"Weights file not found: '{weights_path}'. "
+                "Please train the model first with: python train.py --data_dir data"
+            )
 
         self.model.float()
         self.model.eval()
 
     def extract_candidates(self, frame: np.ndarray) -> list:
         """
-        Extract candidate pothole bounding boxes from the road surface.
+        Stage 1: Extract candidate pothole bounding boxes using classical CV.
+        Uses bilateral filtering, adaptive thresholding, and morphological ops.
         """
         h, w = frame.shape[:2]
-        # Road region of interest: bottom 48% of the frame (avoids sky, horizon, hood)
+        # Road region of interest: bottom 48% of the frame (avoids sky, horizon)
         roi_top = int(h * 0.52)
         roi = frame[roi_top:, :]
-        rh, rw = roi.shape[:2]
 
-        # Convert to LAB for luminance extraction and Grayscale
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        # Convert to LAB for luminance extraction
         lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
         l_chan = lab[:, :, 0]
 
         # Smooth road aggregate texture while preserving crater borders
         blurred = cv2.bilateralFilter(l_chan, 9, 75, 75)
 
-        # Multi-scale adaptive thresholding for depression detection
+        # Adaptive thresholding for depression detection
         thresh = cv2.adaptiveThreshold(
             blurred, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 10
         )
@@ -76,11 +83,11 @@ class PotholeDetector:
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            # Area filter: ignore microscopic road grains and gigantic non-pothole blobs
+            # Area filter: ignore tiny noise and oversized blobs
             if 350 < area < (h * w * 0.15):
                 bx, by, bw, bh = cv2.boundingRect(cnt)
                 aspect = bw / float(bh) if bh > 0 else 0
-                # Potholes on perspective road surface generally have aspect ratio 0.4 to 4.5
+                # Potholes generally have aspect ratio 0.4 to 4.5
                 if 0.4 < aspect < 4.5:
                     # Map coordinates back to original frame
                     orig_y = by + roi_top
@@ -88,25 +95,14 @@ class PotholeDetector:
 
         return candidates
 
-    def score_patch_contrast(self, patch: np.ndarray) -> float:
-        """Calculate cavity depth contrast metric (dark center vs brighter road rim)."""
-        if patch.size == 0 or patch.shape[0] < 4 or patch.shape[1] < 4:
-            return 0.0
-        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-        ph, pw = gray.shape
-        center = gray[int(ph * 0.25):int(ph * 0.75), int(pw * 0.25):int(pw * 0.75)]
-        if center.size == 0:
-            return 0.0
-        c_mean = float(np.mean(center))
-        r_mean = float(np.mean(gray))
-        # Depressions are darker than the overall region
-        contrast_score = max(0.0, min(1.0, (r_mean - c_mean) / 35.0 + 0.5))
-        return contrast_score
-
     def predict(self, frame: np.ndarray, conf_threshold: float = 0.5) -> list:
         """
-        Detect potholes in a single frame using the custom CNN pipeline.
-        
+        Detect potholes in a single frame.
+
+        Stage 1: Classical region proposals generate candidate boxes.
+        Stage 2: Each candidate patch is classified by ResPotholeNet.
+                 The CNN sigmoid confidence is the SOLE accept/reject criterion.
+
         Returns:
             list of {"box": (x1, y1, x2, y2), "score": float}
         """
@@ -116,10 +112,9 @@ class PotholeDetector:
         if not candidate_boxes:
             return []
 
-        # Prepare patches for custom CNN evaluation
+        # Prepare patches for CNN evaluation
         patch_tensors = []
         valid_boxes = []
-        contrast_scores = []
 
         for (x1, y1, x2, y2) in candidate_boxes:
             # Context margin around box
@@ -134,13 +129,9 @@ class PotholeDetector:
             if patch.size == 0 or patch.shape[0] < 6 or patch.shape[1] < 6:
                 continue
 
-            contrast = self.score_patch_contrast(patch)
-            contrast_scores.append(contrast)
-
-            # Preprocess patch for ResPotholeNet: resize to (128, 128) and normalise
+            # Preprocess patch for ResPotholeNet: resize to 128x128 and normalise
             resized = cv2.resize(patch, (128, 128))
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-            # Normalize with standard road image distribution (keep float32)
             mean = np.array([0.45, 0.45, 0.45], dtype=np.float32)
             std = np.array([0.22, 0.22, 0.22], dtype=np.float32)
             rgb = (rgb - mean) / std
@@ -153,29 +144,20 @@ class PotholeDetector:
 
         batch = torch.cat(patch_tensors, dim=0).to(self.device)
         with torch.no_grad():
-            cnn_conf, bbox_delta = self.model(batch)
+            cnn_conf, _ = self.model(batch)
+            # Regression head output is intentionally ignored at inference.
+            # See project report for discussion of training/inference mismatch.
             cnn_scores = cnn_conf.squeeze(-1).cpu().numpy()
-            deltas = bbox_delta.cpu().numpy()
 
         detections = []
         for i, (bx1, by1, bx2, by2) in enumerate(valid_boxes):
-            # Deep CNN semantic confidence (ResPotholeNet is the primary decision-maker)
-            raw_cnn = float(cnn_scores[i])
-            final_score = float(np.clip(raw_cnn, 0.0, 1.0))
+            # CNN confidence is the sole decision criterion
+            score = float(np.clip(cnn_scores[i], 0.0, 1.0))
 
-            if final_score >= conf_threshold:
-                # Apply small boundary refinement from regressor head
-                bw = bx2 - bx1
-                bh = by2 - by1
-                dx, dy, dw, dh = deltas[i] * 0.05
-                rx1 = int(max(0, bx1 + dx * bw))
-                ry1 = int(max(0, by1 + dy * bh))
-                rx2 = int(min(w, bx2 + dw * bw))
-                ry2 = int(min(h, by2 + dh * bh))
-
+            if score >= conf_threshold:
                 detections.append({
-                    "box": (rx1, ry1, rx2, ry2),
-                    "score": round(final_score, 3),
+                    "box": (bx1, by1, bx2, by2),
+                    "score": round(score, 3),
                 })
 
         # Apply Non-Maximum Suppression to eliminate overlapping boxes

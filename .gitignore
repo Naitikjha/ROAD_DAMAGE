@@ -16,3 +16,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Dataset (download separately — see README)
+data/
+temp_repo/
+test_pothole.jpg

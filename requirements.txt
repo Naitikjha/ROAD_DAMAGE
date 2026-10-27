@@ -1,0 +1,16 @@
+# Core ML
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Computer Vision
+opencv-python>=4.8.0
+
+# Data & Computation
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Web Application
+streamlit>=1.28.0
+
+# Video encoding (H.264 for browser playback)
+imageio-ffmpeg>=0.4.9

@@ -4,40 +4,53 @@ A deep learning course project for detecting, classifying, and assessing the sev
 
 ---
 
-## 🏗️ Architecture: Two-Stage Detection Pipeline (R-CNN Paradigm)
+## 🏗️ Architecture: Two-Stage Detection Pipeline
 
-Rather than using an off-the-shelf blackbox detector, the system employs a two-stage computer vision & deep learning architecture:
+The system uses a **two-stage pipeline**: classical computer vision generates region proposals, and a custom CNN classifies each proposal.
 
-1. **Stage 1: Road-Surface Region Proposals (RPN / Morphological)**
-   - Extracts road surface Region of Interest (perspective ROI).
-   - Bilateral filtering (`d=9, sigmaColor=75, sigmaSpace=75`) to preserve crater rim edges while smoothing asphalt aggregate grain.
-   - Multi-scale adaptive thresholding and morphological closing/opening to isolate candidate road depressions.
-   - Contour extraction and aspect-ratio geometry filtering (`0.4 < aspect < 4.5`) generate candidate bounding boxes.
+### Stage 1: Classical Region Proposals
+- Extracts the road surface ROI (bottom 48% of the frame).
+- Bilateral filtering (`d=9, σ_color=75, σ_space=75`) smooths asphalt texture while preserving edges.
+- Adaptive thresholding + morphological opening/closing isolates dark candidate regions.
+- Contour extraction with aspect-ratio filtering (`0.4 < aspect < 4.5`) produces candidate bounding boxes.
 
-2. **Stage 2: ResPotholeNet Deep Patch Classifier (Custom CNN)**
-   - Candidate patches are resized to **128 × 128** and normalized against road pavement distribution.
-   - **Stem:** Strided convolutions for initial spatial downsampling.
-   - **Residual Bottlenecks:** 3 stages of residual blocks with skip connections to prevent gradient vanishing.
-   - **Squeeze-and-Excitation (SE) Attention:** Re-calibrates channel weights to focus on dark cavity depth features.
-   - **Spatial Pyramid Pooling - Fast (SPPF):** Multi-scale receptive field aggregation (captures small cracks to large craters).
-   - **Dual Head:**
-     - Classification Head (Sigmoid probability) — **primary decision maker with full veto power**.
-     - Bounding Box Refinement Head (Smooth L1 regression delta).
-   - **Non-Maximum Suppression (NMS):** Eliminates overlapping redundant proposals (`IoU threshold = 0.35`).
+### Stage 2: ResPotholeNet CNN Classifier
+- Each candidate patch is resized to **128 × 128** and normalized.
+- The CNN classifies each patch as pothole or normal road.
+- **The CNN sigmoid confidence is the sole accept/reject criterion** — no contrast score blending.
+- Non-Maximum Suppression (IoU threshold = 0.35) removes overlapping boxes.
+
+> **Note:** The bounding box regression head exists in the architecture but is **not used at inference** due to a training/inference target mismatch. The boxes come directly from Stage 1 contours. See the project report for ablation discussion.
 
 ---
 
-## 📊 Model Specifications
+## 🧠 CNN Architecture: ResPotholeNet
+
+| Component | Details |
+|---|---|
+| **Stem** | Strided convolutions for initial spatial downsampling |
+| **Backbone** | 3 stages of Residual Bottleneck blocks with skip connections |
+| **Attention** | Squeeze-and-Excitation (SE) channel attention |
+| **Pooling** | Spatial Pyramid Pooling - Fast (SPPF) for multi-scale features |
+| **Classification Head** | FC layers → Sigmoid → confidence ∈ [0, 1] |
+| **Regression Head** | FC layers → 4 deltas (unused at inference) |
+| **Parameters** | ~858,245 trainable parameters |
+
+---
+
+## 📊 Training Details
 
 | Attribute | Specification |
 |---|---|
-| **Architecture** | ResPotholeNet (SE-ResNet + SPPF) |
-| **Parameters** | 858,245 trainable parameters |
-| **Input Resolution** | 128 × 128 patches |
-| **Loss Formulation** | Focal Loss ($\alpha=0.25, \gamma=2.0$) + Smooth L1 Loss |
-| **Pretrained Weights** | **None** (Trained completely from scratch) |
-| **Training Split** | 70% Train / 15% Validation / 15% Test |
-| **Evaluation Metrics** | Accuracy, Precision, Recall, F1-Score, Confusion Matrix |
+| **Training Data** | Real road images (~712 images: 364 pothole + 348 normal) |
+| **Data Source** | [anantSinghCross/pothole-detection-system](https://github.com/anantSinghCross/pothole-detection-system-using-convolution-neural-networks) |
+| **Split** | 70% Train / 15% Validation / 15% Test (by image) |
+| **Loss** | Focal Loss (α=0.25, γ=2.0) — standard formulation |
+| **Optimizer** | AdamW (weight_decay=1e-4) with CosineAnnealing LR |
+| **Augmentation** | Random H/V flip, brightness/contrast jitter, rotation (±15°) |
+| **Pretrained Weights** | **None** (trained from scratch) |
+
+Evaluation metrics (Precision, Recall, F1, Confusion Matrix) are computed on the held-out test set and saved to `model_metrics.json`.
 
 ---
 
@@ -49,46 +62,35 @@ git clone <your-repo-url>
 cd ROAD_POTHHOLE
 ```
 
-### 2. Install Required Packages
+### 2. Install Dependencies
 ```bash
-pip install streamlit opencv-python numpy imageio-ffmpeg torch pandas
+pip install -r requirements.txt
 ```
 
-### 3. Run the Streamlit Application
+### 3. Download the Dataset
+```bash
+# The dataset is auto-organized into data/potholes/ and data/normal/
+# Or clone manually:
+git clone --depth 1 https://github.com/anantSinghCross/pothole-detection-system-using-convolution-neural-networks.git temp_repo
+# Then run: python -c "see train.py instructions"
+```
+
+### 4. Train the Model
+```bash
+python train.py --data_dir data --epochs 15 --batch_size 16
+```
+
+This produces:
+- `pothole_cnn.pth` — best model weights (saved at highest validation F1)
+- `model_metrics.json` — test set evaluation report
+
+### 5. Run the Application
 ```bash
 streamlit run app.py
 ```
 Open **`http://localhost:8501`** in your browser.
 
----
-
-## 🏋️ Training & Evaluation
-
-The training script supports both real image datasets (e.g., RDD2022 / Kaggle) and structured synthetic benchmark generation:
-
-```bash
-# Train on synthetic benchmark dataset with train/val/test evaluation:
-python train.py --epochs 8 --batch_size 16
-
-# Train on real road dataset (folder structured with /potholes and /normal):
-python train.py --data_dir /path/to/road_dataset --epochs 15 --batch_size 32
-```
-
-Outputs:
-- Best weights: `pothole_cnn.pth`
-- Evaluation report: `model_metrics.json` (includes Precision, Recall, F1-score, Confusion Matrix)
-
----
-
-## 🌟 Frontend Features & Fixes
-
-- **Decoupled Tabs:** Video and Image tabs operate on separate session states; uploading an image will not wipe video results.
-- **Reliable File Tracking:** Identifies uploads by file metadata (`name + size`) rather than volatile memory IDs.
-- **H.264 Browser Encoding:** Automatic conversion to H.264 `yuv420p` with `faststart` and dimension padding (`ceil(iw/2)*2`) for seamless browser playback.
-- **Throttled Progress Updates:** Progress bar updates are throttled to prevent UI stutter on long videos.
-- **Accurate Metric Reporting:** Displays total frames read and frames evaluated by the CNN.
-- **Chronological Detections Log:** Detections are logged in time sequence with severity (Low, Medium, High) derived from physical perspective area.
-- **Cache Management:** One-click "Clear Temp Files & Cache" button in the sidebar to prevent disk buildup.
+> ⚠️ The app **requires** `pothole_cnn.pth` to exist. If missing, it will display an error instructing you to train first.
 
 ---
 
@@ -97,13 +99,17 @@ Outputs:
 ```
 ├── .streamlit/
 │   └── config.toml          # Upload limit configuration
+├── data/
+│   ├── potholes/            # Real pothole road images
+│   └── normal/              # Clear road pavement images
 ├── models/
 │   └── pothole_net.py       # Custom CNN architecture (ResPotholeNet)
 ├── app.py                   # Streamlit web application
 ├── detector.py              # Two-stage detection engine
 ├── train.py                 # Training, validation & evaluation pipeline
 ├── pothole_cnn.pth          # Trained model weights
-├── model_metrics.json       # Unseen test set evaluation metrics
+├── model_metrics.json       # Test set evaluation metrics
+├── requirements.txt         # Python dependencies
 ├── sample_pothole_video.mp4 # Sample test video
 ├── .gitignore
 └── README.md
@@ -111,5 +117,16 @@ Outputs:
 
 ---
 
+## ⚠️ Known Limitations
+
+- **ROI hardcoded**: Stage 1 uses the bottom 48% of the frame, which may fail on cropped or tilted footage.
+- **No tracking**: Pothole count is per-frame, not unique potholes across a video. A tracker (SORT/DeepSORT) is needed for unique counting.
+- **Regression head unused**: The bbox refinement head was trained with synthetic targets that don't match inference crops. It is intentionally disabled.
+- **Dataset size**: ~712 images is small. Performance would improve with larger datasets (e.g., RDD2022 with thousands of images).
+- **Frame skipping**: With `every_n > 1`, the "Frames Processed" metric shows only frames where the CNN ran.
+
+---
+
 ## 📜 Academic Integrity Note
-Developed for academic coursework. Formulated honestly as a **Two-Stage Region-Proposal + Custom CNN Verification Architecture** compliant with project requirements (zero pretrained models).
+
+Developed for academic coursework. Formulated honestly as a **classical region proposal + custom CNN classifier pipeline**. No YOLO, Ultralytics, torchvision backbones, or pretrained weights used. All limitations are documented above.

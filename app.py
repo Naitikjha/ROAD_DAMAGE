@@ -58,11 +58,7 @@ MAX_VIDEO_DURATION_S    = 300          # 5 minutes
 # Root folder for per-session temporary files
 TEMP_ROOT = Path(tempfile.gettempdir()) / "pothole_app"
 
-# ── DEMO MODE ─────────────────────────────────────────────────────────────────
-# DEMO_MODE simulates detections for UI testing when testing without trained weights.
-# False by default because ResPotholeNet is connected!
-DEMO_MODE = False
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,36 +67,26 @@ DEMO_MODE = False
 
 @st.cache_resource
 def load_model():
-    """Load and cache our custom CNN detector (ResPotholeNet)."""
-    try:
-        from detector import PotholeDetector
-        weights_file = Path("pothole_cnn.pth")
-        weights_path = str(weights_file) if weights_file.exists() else None
-        return PotholeDetector(weights_path=weights_path)
-    except Exception as e:
-        st.error(f"Failed to initialize ResPotholeNet: {e}")
-        return None
+    """Load and cache our custom CNN detector (ResPotholeNet).
+    Fails loudly if weights are missing — no silent fallback."""
+    from detector import PotholeDetector
+    weights_file = Path("pothole_cnn.pth")
+    if not weights_file.exists():
+        st.error(
+            "**Model weights not found:** `pothole_cnn.pth` is missing.\n\n"
+            "Train the model first:\n```\npython train.py --data_dir data\n```"
+        )
+        st.stop()
+    return PotholeDetector(weights_path=str(weights_file))
 
 
-def predict(frame: np.ndarray, conf: float, demo_mode: bool = DEMO_MODE) -> list:
+def predict(frame: np.ndarray, conf: float) -> list:
     """
     Run pothole detection on a single frame.
     Uses our custom ResPotholeNet CNN (no pretrained models).
     """
-    if demo_mode:
-        h, w = frame.shape[:2]
-        candidates = [
-            {"box": (int(w * 0.38), int(h * 0.68), int(w * 0.60), int(h * 0.82)), "score": 0.86},
-            {"box": (int(w * 0.18), int(h * 0.75), int(w * 0.30), int(h * 0.84)), "score": 0.64},
-            {"box": (int(w * 0.65), int(h * 0.70), int(w * 0.92), int(h * 0.93)), "score": 0.91},
-        ]
-        return [c for c in candidates if c["score"] >= conf]
-
     detector = load_model()
-    if detector is not None:
-        return detector.predict(frame, conf_threshold=conf)
-    st.error("Model could not be loaded. Please ensure models/pothole_net.py and dependencies are installed.")
-    return []
+    return detector.predict(frame, conf_threshold=conf)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -272,7 +258,7 @@ def process_video(
     conf: float,
     every_n: int,
     progress_callback=None,
-    demo_mode: bool = DEMO_MODE,
+
 ) -> dict:
     """
     Process a video file frame-by-frame and write an annotated output.
@@ -360,7 +346,7 @@ def process_video(
 
             # ── Predict on every Nth frame ────────────────────────────────────
             if frame_idx % every_n == 0:
-                raw_dets = predict(frame, conf, demo_mode=demo_mode)
+                raw_dets = predict(frame, conf)
 
                 # ── PLUG TRACKING / TEMPORAL FILTERING HERE ──────────────────
                 # Replace 'tracked_dets' with the output of your tracker
@@ -429,7 +415,7 @@ def process_video(
             writer.release()
 
 
-def process_image(image_bgr: np.ndarray, conf: float, demo_mode: bool = DEMO_MODE) -> dict:
+def process_image(image_bgr: np.ndarray, conf: float) -> dict:
     """
     Run pothole detection on a single image.
 
@@ -437,7 +423,6 @@ def process_image(image_bgr: np.ndarray, conf: float, demo_mode: bool = DEMO_MOD
     ----------
     image_bgr : BGR numpy array (decoded from uploaded image)
     conf      : confidence threshold
-    demo_mode : bool
 
     Returns
     -------
@@ -445,7 +430,7 @@ def process_image(image_bgr: np.ndarray, conf: float, demo_mode: bool = DEMO_MOD
         annotated_image : np.ndarray  (BGR)
         detections      : list of dicts with box, score, severity
     """
-    raw_dets = predict(image_bgr, conf, demo_mode=demo_mode)
+    raw_dets = predict(image_bgr, conf)
 
     enriched = []
     for det in raw_dets:
@@ -595,7 +580,7 @@ def render_hero():
 
 
 def render_sidebar() -> tuple:
-    """Render sidebar controls and return (conf_threshold, every_n)."""
+    """Render sidebar controls and return (conf_threshold, every_n).\nDemo mode removed — CNN is always active."""
     with st.sidebar:
         st.markdown("## Settings")
         st.markdown("---")
@@ -633,31 +618,24 @@ def render_sidebar() -> tuple:
         with st.expander("About the Model", expanded=False):
             st.markdown(
                 """
-                **Two-Stage Detection Architecture (R-CNN Paradigm)**
+                **Two-Stage Detection: Classical Region Proposals + CNN Classifier**
 
                 | Stage | Component | Technical Specification |
                 |---|---|---|
-                | **Stage 1** | **Road ROI & Region Proposal** | Bilateral filter (9, 75, 75), adaptive thresholding, morphological open/close, aspect-ratio contour filters |
+                | **Stage 1** | **Classical Region Proposals** | Bilateral filter, adaptive thresholding, morphological open/close, contour extraction |
                 | **Stage 2** | **ResPotholeNet Classifier** | 3-stage Residual Bottlenecks with SE Attention + SPPF multi-scale pooling |
-                | **Decision** | **Primary Deep CNN Scorer** | Full veto power via ResPotholeNet sigmoid confidence [0, 1] |
-                | **Parameters** | **858,245 parameters** | 100% custom implementation (no transfer learning, no YOLO) |
-                | **Loss Function** | **Focal Loss + Smooth L1** | Focal loss (α=0.25, γ=2.0) addresses class imbalance vs pavement |
-                | **Input Size** | **128 × 128 patches** | Extracted candidate patches normalized with road surface distribution |
+                | **Decision** | **CNN Confidence Only** | Sole accept/reject via sigmoid confidence [0, 1]. No contrast blending. |
+                | **Parameters** | **~858K parameters** | 100% custom (no transfer learning, no YOLO) |
+                | **Loss Function** | **Focal Loss** | α=0.25, γ=2.0 for class imbalance |
+                | **Input Size** | **128 × 128 patches** | Candidate patches normalized with road distribution |
+                | **Training Data** | **Real road images** | ~712 images (potholes + normal road), 70/15/15 split |
 
                 ---
-                **Course Compliance:** No YOLO, Ultralytics, torchvision backbones, or pretrained weights used.
+                **Note:** Stage 1 proposes regions using classical CV; Stage 2 (CNN) is the sole decision maker.
+                The bbox regression head is not used at inference (see report).
+                **Course Compliance:** No YOLO, Ultralytics, torchvision backbones, or pretrained weights.
                 """
             )
-
-        st.markdown("---")
-
-        demo_mode = st.toggle(
-            "🧪 Demo Mode (Test UI)",
-            value=DEMO_MODE,
-            help="Generates test bounding boxes on the road so you can verify the video pipeline and UI before connecting your CNN.",
-        )
-        if demo_mode:
-            st.info("Demo Mode is active. Turn off when your CNN is connected.", icon="💡")
 
         st.markdown("---")
         if st.button("🧹 Clear Temp Files & Cache", use_container_width=True):
@@ -668,7 +646,7 @@ def render_sidebar() -> tuple:
             st.success("Session temporary files cleared!")
             st.rerun()
 
-    return conf, every_n, demo_mode
+    return conf, every_n
 
 
 def render_metric_cards(stats: dict):
@@ -766,7 +744,7 @@ def clear_image_results_if_new_file(file_obj):
 
 # ─── VIDEO TAB ───────────────────────────────────────────────────────────────
 
-def render_video_tab(conf: float, every_n: int, demo_mode: bool = DEMO_MODE):
+def render_video_tab(conf: float, every_n: int):
     """Render the video upload, detection, and results section."""
     st.markdown("### Upload a Road Video")
     st.caption(
@@ -851,7 +829,7 @@ def render_video_tab(conf: float, every_n: int, demo_mode: bool = DEMO_MODE):
                     min(p, 1.0),
                     text=f"Processing frames... {int(p * 100)}%",
                 ),
-                demo_mode=demo_mode,
+
             )
 
             status_text.markdown("Re-encoding to H.264 for browser playback...")
@@ -905,7 +883,7 @@ def render_video_tab(conf: float, every_n: int, demo_mode: bool = DEMO_MODE):
 
 # ─── IMAGE TAB ───────────────────────────────────────────────────────────────
 
-def render_image_tab(conf: float, demo_mode: bool = DEMO_MODE):
+def render_image_tab(conf: float):
     """Render the image upload, detection, and results section."""
     st.markdown("### Upload a Road Image")
     st.caption(
@@ -957,7 +935,7 @@ def render_image_tab(conf: float, demo_mode: bool = DEMO_MODE):
     if detect_btn:
         with st.spinner("Running detection..."):
             try:
-                result = process_image(image_bgr, conf, demo_mode=demo_mode)
+                result = process_image(image_bgr, conf)
                 st.session_state["image_result_img"]     = result["annotated_image"]
                 st.session_state["image_detections_log"] = [
                     {
@@ -1031,15 +1009,15 @@ def main():
     render_hero()
 
     # Sidebar returns the settings used by both tabs
-    conf, every_n, demo_mode = render_sidebar()
+    conf, every_n = render_sidebar()
 
     tab_video, tab_image = st.tabs(["🎬  Video", "🖼️  Image"])
 
     with tab_video:
-        render_video_tab(conf, every_n, demo_mode)
+        render_video_tab(conf, every_n)
 
     with tab_image:
-        render_image_tab(conf, demo_mode)
+        render_image_tab(conf)
 
 
 if __name__ == "__main__":
