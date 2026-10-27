@@ -38,19 +38,24 @@ The system uses a **two-stage pipeline**: classical computer vision generates re
 
 ---
 
-## 📊 Training Details
+## 📊 Training Details & Evaluation Scope
 
 | Attribute | Specification |
 |---|---|
-| **Training Data** | Real road images (~712 images: 364 pothole + 348 normal) |
-| **Data Source** | [anantSinghCross/pothole-detection-system](https://github.com/anantSinghCross/pothole-detection-system-using-convolution-neural-networks) |
-| **Split** | 70% Train / 15% Validation / 15% Test (by image) |
-| **Loss** | Focal Loss (α=0.25, γ=2.0) — standard formulation |
-| **Optimizer** | AdamW (weight_decay=1e-4) with CosineAnnealing LR |
-| **Augmentation** | Random H/V flip, brightness/contrast jitter, rotation (±15°) |
-| **Pretrained Weights** | **None** (trained from scratch) |
+| **Training Input** | Domain-aligned 128 × 128 crops from real road photos + Stage-1 hard negatives (shadows, cracks, oil stains) |
+| **Data Source** | Real road images (~712 source photos: 364 pothole + 348 normal) from [anantSinghCross/pothole-detection-system](https://github.com/anantSinghCross/pothole-detection-system-using-convolution-neural-networks) |
+| **Deduplication** | SHA-256 hash verification to eliminate exact/near duplicate photos across splits |
+| **Split** | 70% Train / 15% Validation / 15% Test (held-out test set n = 108) |
+| **Loss Function** | Focal Loss (α=0.25, γ=2.0) for binary classification |
+| **Optimizer** | AdamW (weight_decay=1e-4) with CosineAnnealingLR scheduler |
+| **Augmentation** | Horizontal flip (no vertical flip to preserve ground perspective), brightness/contrast jitter, rotation (±15°) |
+| **Pretrained Weights** | **None** (trained 100% from scratch) |
 
-Evaluation metrics (Precision, Recall, F1, Confusion Matrix) are computed on the held-out test set and saved to `model_metrics.json`.
+### ⚠️ Evaluation Scope: Patch Classification vs. End-to-End Detection
+
+- **What the metrics measure:** The test metrics in [`model_metrics.json`](file:///d:/NAITIK/DL%20PROJECT/ROAD_POTHHOLE/model_metrics.json) (Accuracy: 92.59%, Precision: 90.74%, Recall: 94.23%, F1: 92.45%, n=108) measure the CNN's ability to classify **128 × 128 patches** as pothole vs. normal road.
+- **What they do not measure:** They do **not** represent end-to-end bounding box detection accuracy (e.g., mAP@0.5). Bounding boxes are proposed by Stage 1 OpenCV contours; the dataset provides image-level labels without ground-truth bounding box coordinates.
+- **Sample size sensitivity:** On n=108 test samples (52 positive), a single error shifts metrics by ~1%. All numbers should be interpreted in this context.
 
 ---
 
@@ -119,11 +124,12 @@ Open **`http://localhost:8501`** in your browser.
 
 ## ⚠️ Known Limitations
 
-- **ROI hardcoded**: Stage 1 uses the bottom 48% of the frame, which may fail on cropped or tilted footage.
-- **No tracking**: Pothole count is per-frame, not unique potholes across a video. A tracker (SORT/DeepSORT) is needed for unique counting.
-- **Regression head unused**: The bbox refinement head was trained with synthetic targets that don't match inference crops. It is intentionally disabled.
-- **Dataset size**: ~712 images is small. Performance would improve with larger datasets (e.g., RDD2022 with thousands of images).
-- **Frame skipping**: With `every_n > 1`, the "Frames Processed" metric shows only frames where the CNN ran.
+- **Patch Classification vs. Detection Accuracy**: The 92.45% F1 score evaluates whether the CNN correctly identifies a 128×128 crop as a pothole or clear road patch. It does not measure whole-frame object detection accuracy (mAP), because the bounding boxes are derived from Stage 1 OpenCV morphological contours rather than ground-truth annotated boxes.
+- **Sample Size Sensitivity**: Held-out test set size is n = 108 crops (52 pothole, 56 normal); a single misclassification moves the accuracy/F1 score by ~1%.
+- **ROI Hardcoded**: Stage 1 inspects the lower 48% of the frame, which assumes standard forward-facing dashcam perspective. It may miss hazards on tilted or cropped angles.
+- **No Tracking Across Frames**: Counts reflect detections per evaluated frame rather than unique persistent potholes.
+- **Regression Head Unused at Inference**: The model retains its bounding box regression architecture for academic parity, but inference uses Stage 1 contours directly to avoid synthetic anchor mismatches.
+- **Frame Skipping**: With `every_n > 1`, processing skips intermediate frames for real-time speed, maintaining persistent overlay from the previous evaluation.
 
 ---
 

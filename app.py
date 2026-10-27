@@ -66,10 +66,15 @@ TEMP_ROOT = Path(tempfile.gettempdir()) / "pothole_app"
 # ─────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
-def load_model():
+def _load_model_cached():
     """Load and cache our custom CNN detector (ResPotholeNet).
-    Fails loudly if weights are missing — no silent fallback."""
+    Called only after confirming weights file exists."""
     from detector import PotholeDetector
+    return PotholeDetector(weights_path=str(Path("pothole_cnn.pth")))
+
+
+def load_model():
+    """Check weights exist (outside cache), then load."""
     weights_file = Path("pothole_cnn.pth")
     if not weights_file.exists():
         st.error(
@@ -77,7 +82,7 @@ def load_model():
             "Train the model first:\n```\npython train.py --data_dir data\n```"
         )
         st.stop()
-    return PotholeDetector(weights_path=str(weights_file))
+    return _load_model_cached()
 
 
 def predict(frame: np.ndarray, conf: float) -> list:
@@ -627,12 +632,12 @@ def render_sidebar() -> tuple:
                 | **Decision** | **CNN Confidence Only** | Sole accept/reject via sigmoid confidence [0, 1]. No contrast blending. |
                 | **Parameters** | **~858K parameters** | 100% custom (no transfer learning, no YOLO) |
                 | **Loss Function** | **Focal Loss** | α=0.25, γ=2.0 for class imbalance |
-                | **Input Size** | **128 × 128 patches** | Candidate patches normalized with road distribution |
-                | **Training Data** | **Real road images** | ~712 images (potholes + normal road), 70/15/15 split |
+                | **Input Size** | **128 × 128 crops** | Domain-aligned patches + Stage-1 hard negatives (shadows/cracks) |
+                | **Training Data** | **Real road images** | ~712 photos (SHA-256 deduplicated), 70/15/15 split |
 
                 ---
-                **Note:** Stage 1 proposes regions using classical CV; Stage 2 (CNN) is the sole decision maker.
-                The bbox regression head is not used at inference (see report).
+                **Note:** Stage 1 proposes candidate regions; Stage 2 (CNN) is the sole decision maker.
+                The bbox regression head is unused at inference (see report). Test metrics represent patch classification (n=108), not end-to-end mAP.
                 **Course Compliance:** No YOLO, Ultralytics, torchvision backbones, or pretrained weights.
                 """
             )
