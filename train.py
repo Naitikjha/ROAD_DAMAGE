@@ -99,6 +99,53 @@ def deduplicate_files(paths: List[Path], dhash_threshold: int = 2) -> Tuple[List
     return clean_paths, byte_dupes, near_dupes
 
 
+def cross_class_deduplicate(
+    pos_paths: List[Path],
+    neg_paths: List[Path],
+    dhash_threshold: int = 2,
+) -> Tuple[List[Path], List[Path], int]:
+    """
+    Remove near-duplicate images that appear in BOTH the positive (pothole) and
+    negative (normal) class after per-class deduplication.
+
+    This prevents a photo that looks nearly identical to a clear-road photo from
+    appearing as a mislabelled pothole crop and vice versa. The duplicate is
+    removed from the class with MORE images to preserve balance.
+
+    Returns (clean_pos, clean_neg, cross_dupes_removed)
+    """
+    neg_hashes = []
+    for p in neg_paths:
+        img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+        neg_hashes.append((dhash(img) if img is not None else None, p))
+
+    cross_dupes = 0
+    clean_pos = []
+    removed_neg = set()
+
+    for pp in pos_paths:
+        img = cv2.imread(str(pp), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            clean_pos.append(pp)
+            continue
+        ph = dhash(img)
+        is_cross_dupe = False
+        for nh, np_path in neg_hashes:
+            if nh is not None and bin(ph ^ nh).count("1") <= dhash_threshold:
+                # Found cross-class near-duplicate: remove from the larger class
+                if len(pos_paths) >= len(neg_paths):
+                    is_cross_dupe = True  # drop from pos
+                else:
+                    removed_neg.add(np_path)  # drop from neg
+                cross_dupes += 1
+                break
+        if not is_cross_dupe:
+            clean_pos.append(pp)
+
+    clean_neg = [p for _, p in neg_hashes if p not in removed_neg]
+    return clean_pos, clean_neg, cross_dupes
+
+
 def split_source_images(
     pos_files: List[Path],
     neg_files: List[Path],
@@ -161,7 +208,7 @@ class Stage1RoadPatchDataset(Dataset):
                 continue
 
             h, w = img.shape[:2]
-            boxes = extract_stage1_candidates(img, use_roi=False, max_candidates=20)
+            boxes = extract_stage1_candidates(img, roi_mode="auto", max_candidates=20)
             added = 0
 
             if boxes:
@@ -192,7 +239,7 @@ class Stage1RoadPatchDataset(Dataset):
                 continue
 
             h, w = img.shape[:2]
-            boxes = extract_stage1_candidates(img, use_roi=False, max_candidates=20)
+            boxes = extract_stage1_candidates(img, roi_mode="auto", max_candidates=20)
             added = 0
 
             if boxes:
@@ -342,7 +389,7 @@ def run_pipeline_on_images(
             img = cv2.imread(str(p))
             if img is None:
                 continue
-            boxes = extract_stage1_candidates(img, use_roi=False)
+            boxes = extract_stage1_candidates(img, roi_mode="auto")
             if not boxes:
                 counts.append(0)
                 continue
@@ -473,13 +520,17 @@ def train_pipeline(
     raw_pos_paths = sorted(raw_pos_paths)
     raw_neg_paths = sorted(raw_neg_paths)
 
-    # Deduplicate: remove SHA-256 byte duplicates AND perceptual dHash near-duplicates
+    # Deduplicate: remove SHA-256 byte duplicates AND perceptual dHash near-duplicates (per class)
     clean_pos, byte_pos, near_pos = deduplicate_files(raw_pos_paths, dhash_threshold=2)
     clean_neg, byte_neg, near_neg = deduplicate_files(raw_neg_paths, dhash_threshold=2)
+
+    # Cross-class near-duplicate removal: catches photos that appear in BOTH potholes/ and normal/
+    clean_pos, clean_neg, cross_dupes = cross_class_deduplicate(clean_pos, clean_neg, dhash_threshold=2)
 
     print(f"Dataset Deduplication:")
     print(f"  Potholes: {len(raw_pos_paths)} raw -> removed {byte_pos} byte-identical + {near_pos} perceptual near-dupes -> {len(clean_pos)} clean")
     print(f"  Normal:   {len(raw_neg_paths)} raw -> removed {byte_neg} byte-identical + {near_neg} perceptual near-dupes -> {len(clean_neg)} clean")
+    print(f"  Cross-class near-duplicates removed: {cross_dupes}")
     print(f"  Total Clean Unique Source Photos: {len(clean_pos) + len(clean_neg)}")
 
     # Split SOURCE IMAGES deterministically (Zero Data Leakage)
@@ -603,8 +654,12 @@ def train_pipeline(
     val_final = evaluate(model, val_loader, device, threshold=0.5)
 
     report = {
-        "model_architecture": "ResPotholeNet (From Scratch)",
+        "model_architecture": "ResPotholeNet (From Scratch — Classification Head Only)",
         "total_parameters": count_parameters(model),
+        "parameter_note": (
+            "All parameters serve the binary classification head. The bounding box regression head "
+            "was removed because the dataset provides only image-level labels with no GT box coordinates."
+        ),
         "loss_function": "Focal Loss (alpha=0.25, gamma=2.0)",
         "dataset": {
             "source": str(data_dir),
@@ -615,10 +670,11 @@ def train_pipeline(
                 "clean_normal_images": len(clean_neg),
                 "total_clean_images": len(clean_pos) + len(clean_neg),
                 "byte_identical_duplicates_removed": byte_pos + byte_neg,
-                "perceptual_near_duplicates_removed": near_pos + near_neg,
+                "perceptual_near_duplicates_removed_per_class": near_pos + near_neg,
+                "cross_class_near_duplicates_removed": cross_dupes,
             },
             "split_method": "Deterministic sorted split by source photo (Zero Leakage)",
-            "crop_method": "Symmetric Stage-1 proposal sampling (top 2 proposals per image for both classes)",
+            "crop_method": "Symmetric Stage-1 proposal sampling (top 2 proposals per image, roi_mode=auto for both classes)",
             "crops": {
                 "train_crops": len(train_dataset),
                 "val_crops": len(val_dataset),
@@ -645,6 +701,18 @@ def train_pipeline(
         "test_end_to_end_at_val_threshold": test_e2e_best,
         "test_end_to_end_at_default_0_5": test_e2e_default,
         "evaluation_notes": {
+            "label_noise_warning": (
+                "Positive training crops are the top-2 Stage-1 proposals from pothole photos. "
+                "Stage-1 selects the most salient dark region, which is NOT always the pothole — "
+                "shadows, cracks, and pavement patches also pass the filter. Expect roughly "
+                "10-20% label noise in positive crops (visible in positives_sheet.png). "
+                "This is an architectural limitation of weak Stage-1 supervision."
+            ),
+            "stage1_recall_ceiling": (
+                "The CNN only evaluates what Stage-1 nominates. Potholes missed by the "
+                "classical filter (Stage-1 miss) are invisible to the CNN regardless of "
+                "the CNN confidence threshold. Recall is therefore upper-bounded by Stage-1 recall."
+            ),
             "sample_correlation": (
                 "Test crops originate from unseen source photos. Because patches from the same photo "
                 "share lighting and asphalt conditions, treat patch metrics as subject to roughly +-5 percentage points variance."
@@ -653,7 +721,16 @@ def train_pipeline(
                 "Image-level detection measures whether ANY candidate box in a full frame passes threshold. "
                 "It serves as a coarse frame screening metric. It does NOT represent bounding box mAP@0.5, "
                 "which strictly requires hand-annotated bounding box coordinates."
-            )
+            ),
+            "false_alarm_rate": (
+                "At threshold 0.50, roughly 14/53 (26%) clean road photos trigger at least one "
+                "false alarm box. Raising the threshold above 0.60 reduces this but also drops recall."
+            ),
+            "severity_caveat": (
+                "Severity (low/medium/high) is derived solely from box area relative to frame area. "
+                "There are no manual severity labels in the dataset, so severity assignments "
+                "cannot be objectively validated."
+            ),
         }
     }
 

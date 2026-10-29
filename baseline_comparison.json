@@ -1,0 +1,34 @@
+{
+    "task": "Binary Road Pothole Patch Classification (128x128)",
+    "dataset_split": {
+        "source_photos": 705,
+        "test_crops": 199
+    },
+    "models": {
+        "Custom_ResPotholeNet": {
+            "paradigm": "Trained 100% From Scratch (Pure PyTorch)",
+            "total_parameters": 858245,
+            "classification_parameters": 853985,
+            "latency_ms_per_patch": 35.02,
+            "test_accuracy": 86.93,
+            "test_precision": 92.55,
+            "test_recall": 82.08,
+            "test_f1_score": 87.0,
+            "test_loss": 0.0364
+        },
+        "Pretrained_ResNet18_Baseline": {
+            "paradigm": "Fine-Tuned ImageNet-1k Transfer Learning (torchvision)",
+            "total_parameters": 11209409,
+            "latency_ms_per_patch": 39.58,
+            "test_accuracy": 83.42,
+            "test_precision": 98.67,
+            "test_recall": 69.81,
+            "test_f1_score": 81.77,
+            "test_loss": 0.0821
+        }
+    },
+    "comparative_analysis": {
+        "parameter_reduction": "13.1x fewer parameters in ResPotholeNet",
+        "findings": "ResPotholeNet achieves comparable classification performance (F1: 87.0% vs 81.77%) while requiring 13.1x fewer parameters and zero dependence on external ImageNet pretraining weights."
+    }
+}

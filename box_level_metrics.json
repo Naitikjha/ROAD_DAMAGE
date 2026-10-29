@@ -1,0 +1,256 @@
+{
+  "evaluation_type": "Box-Level Ground Truth Evaluation (IoU >= 0.50)",
+  "annotated_images_count": 30,
+  "total_ground_truth_boxes": 30,
+  "true_positives": 2,
+  "false_positives_pothole_photos": 241,
+  "false_negatives_missed": 28,
+  "clean_road_false_alarm_boxes": 17,
+  "box_precision": 0.82,
+  "box_recall": 6.67,
+  "box_f1_score": 1.47,
+  "mean_iou_on_true_positives": 56.1,
+  "average_precision_ap50": 0.2,
+  "per_image_results": {
+    "p 135.jpg": {
+      "gt_count": 1,
+      "pred_count": 2,
+      "tp": 0,
+      "fp": 2,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 163.jpg": {
+      "gt_count": 1,
+      "pred_count": 3,
+      "tp": 0,
+      "fp": 3,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 276.jpg": {
+      "gt_count": 1,
+      "pred_count": 1,
+      "tp": 0,
+      "fp": 1,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 121.jpg": {
+      "gt_count": 1,
+      "pred_count": 5,
+      "tp": 0,
+      "fp": 5,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 33.jpg": {
+      "gt_count": 1,
+      "pred_count": 6,
+      "tp": 0,
+      "fp": 6,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 173.jpg": {
+      "gt_count": 1,
+      "pred_count": 8,
+      "tp": 0,
+      "fp": 8,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 138.jpg": {
+      "gt_count": 1,
+      "pred_count": 6,
+      "tp": 0,
+      "fp": 6,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 330.jpg": {
+      "gt_count": 1,
+      "pred_count": 4,
+      "tp": 0,
+      "fp": 4,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 309.jpg": {
+      "gt_count": 1,
+      "pred_count": 14,
+      "tp": 0,
+      "fp": 14,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 102.jpg": {
+      "gt_count": 1,
+      "pred_count": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "mean_iou": 0.566
+    },
+    "p 57.jpg": {
+      "gt_count": 1,
+      "pred_count": 12,
+      "tp": 0,
+      "fp": 12,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 170.jpg": {
+      "gt_count": 1,
+      "pred_count": 8,
+      "tp": 0,
+      "fp": 8,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 34.jpg": {
+      "gt_count": 1,
+      "pred_count": 18,
+      "tp": 0,
+      "fp": 18,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 240.jpg": {
+      "gt_count": 1,
+      "pred_count": 13,
+      "tp": 0,
+      "fp": 13,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 92.jpg": {
+      "gt_count": 1,
+      "pred_count": 1,
+      "tp": 0,
+      "fp": 1,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 211.jpg": {
+      "gt_count": 1,
+      "pred_count": 5,
+      "tp": 0,
+      "fp": 5,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 49.jpg": {
+      "gt_count": 1,
+      "pred_count": 10,
+      "tp": 1,
+      "fp": 9,
+      "fn": 0,
+      "mean_iou": 0.556
+    },
+    "p 85.jpg": {
+      "gt_count": 1,
+      "pred_count": 5,
+      "tp": 0,
+      "fp": 5,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 60.jpg": {
+      "gt_count": 1,
+      "pred_count": 2,
+      "tp": 0,
+      "fp": 2,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 310.jpg": {
+      "gt_count": 1,
+      "pred_count": 13,
+      "tp": 0,
+      "fp": 13,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 14.jpg": {
+      "gt_count": 1,
+      "pred_count": 10,
+      "tp": 0,
+      "fp": 10,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 136.jpg": {
+      "gt_count": 1,
+      "pred_count": 12,
+      "tp": 0,
+      "fp": 12,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 248.jpg": {
+      "gt_count": 1,
+      "pred_count": 16,
+      "tp": 0,
+      "fp": 16,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 261.jpg": {
+      "gt_count": 1,
+      "pred_count": 6,
+      "tp": 0,
+      "fp": 6,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 96.jpg": {
+      "gt_count": 1,
+      "pred_count": 19,
+      "tp": 0,
+      "fp": 19,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 26.jpg": {
+      "gt_count": 1,
+      "pred_count": 11,
+      "tp": 0,
+      "fp": 11,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 243.jpg": {
+      "gt_count": 1,
+      "pred_count": 19,
+      "tp": 0,
+      "fp": 19,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 143.jpg": {
+      "gt_count": 1,
+      "pred_count": 7,
+      "tp": 0,
+      "fp": 7,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 134.jpg": {
+      "gt_count": 1,
+      "pred_count": 1,
+      "tp": 0,
+      "fp": 1,
+      "fn": 1,
+      "mean_iou": 0.0
+    },
+    "p 303.jpg": {
+      "gt_count": 1,
+      "pred_count": 5,
+      "tp": 0,
+      "fp": 5,
+      "fn": 1,
+      "mean_iou": 0.0
+    }
+  }
+}

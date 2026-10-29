@@ -6,9 +6,12 @@ Architecture Highlights:
 1. Residual Bottlenecks with skip connections (prevent gradient degradation)
 2. Squeeze-and-Excitation (SE) Channel Attention (focuses on dark asphalt depressions)
 3. Spatial Pyramid Pooling (SPPF) for multi-scale receptive field (tiny cracks to large craters)
-4. Dual-Head Output:
-   - Classification Head -> Pothole probability score [0, 1]
-   - Regression Head     -> Bounding box boundary refinement (dx, dy, dw, dh)
+4. Single Classification Head -> Pothole probability score [0, 1]
+
+Note: The bounding box regression head has been REMOVED. The dataset provides only
+image-level pothole/normal labels with no GT bounding box coordinates, so the
+regressor was never trained and contributed dead parameters to the reported count.
+All ~853,985 parameters now exclusively serve the classification task.
 """
 
 import torch
@@ -84,13 +87,17 @@ class SPPF(nn.Module):
 
 class ResPotholeNet(nn.Module):
     """
-    Custom Deep CNN for Pothole Verification & Bounding Box Refinement.
-    
+    Custom Deep CNN for Pothole Patch Classification.
+
     Inputs:
         x: Tensor of shape (B, 3, 128, 128) representing candidate road patches.
     Outputs:
         conf: Tensor of shape (B, 1) in [0, 1] — confidence that patch is a pothole.
-        bbox_delta: Tensor of shape (B, 4) — (dx, dy, dw, dh) box adjustments.
+        (None is returned as the second value for call-site compatibility.)
+
+    The regression head has been removed — the dataset provides only image-level
+    labels with no bounding box coordinates, so the regressor was never trained.
+    All 853,985 parameters serve the classification task exclusively.
     """
     def __init__(self, in_channels: int = 3):
         super().__init__()
@@ -136,13 +143,6 @@ class ResPotholeNet(nn.Module):
             nn.Sigmoid(),
         )
 
-        # Head 2: Bounding Box Refinement
-        self.regressor = nn.Sequential(
-            nn.Linear(128, 32),
-            nn.SiLU(inplace=True),
-            nn.Linear(32, 4),
-        )
-
         self._init_weights()
 
     def _init_weights(self):
@@ -165,10 +165,10 @@ class ResPotholeNet(nn.Module):
         x = self.sppf(self.down3(x))
         feat = self.gap(x).flatten(1)
         shared = self.fc_shared(feat)
-
         conf = self.classifier(shared)
-        delta = self.regressor(shared)
-        return conf, delta
+        # Return (conf, None) for backward compatibility with call sites
+        # that unpack two values: conf, _ = model(x)
+        return conf, None
 
 
 def count_parameters(model: nn.Module) -> int:
@@ -179,8 +179,7 @@ def count_parameters(model: nn.Module) -> int:
 if __name__ == "__main__":
     net = ResPotholeNet()
     dummy = torch.randn(2, 3, 128, 128)
-    conf, delta = net(dummy)
+    conf, _ = net(dummy)
     print(f"ResPotholeNet instantiated successfully!")
-    print(f"Total Parameters: {count_parameters(net):,}")
+    print(f"Total Parameters (classification-only): {count_parameters(net):,}")
     print(f"Sample Confidence Shape: {conf.shape}")
-    print(f"Sample Delta Shape: {delta.shape}")

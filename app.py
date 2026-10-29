@@ -100,10 +100,13 @@ def predict(frame: np.ndarray, conf: float) -> list:
 
 def get_severity(box: tuple, frame_shape: tuple) -> str:
     """
-    Map a bounding box to a severity level using the relative box area.
+    Map a bounding box to a severity level using relative box area (2D image-plane proxy).
 
-    Severity is intentionally decoupled from the model's confidence score
-    so that it reflects the physical size of the pothole in the frame.
+    Methodological Caveat:
+    Severity is computed strictly as a 2D bounding box area ratio on the camera image plane:
+    ratio = box_area / frame_area.
+    This serves as a visual footprint proxy. Without LiDAR or calibrated stereo depth,
+    true physical crater volume, depth, and distance perspective effects cannot be measured directly.
 
     Parameters
     ----------
@@ -343,6 +346,15 @@ def process_video(
         detections_log   = []
         start_time       = time.perf_counter()
 
+        # Local Kalman Filter Pothole Tracker instance (SORT algorithm)
+        # Completely self-contained per processing call (no shared global state)
+        from detector import PotholeTracker
+        tracker = PotholeTracker(
+            iou_thresh=0.20,
+            max_age=max(3, int(8 / max(1, every_n))),
+            min_hits=2,
+        )
+
         # Throttle progress callbacks (every ~2.5% of total frames) to prevent Streamlit UI choke
         progress_throttle_step = max(1, total_frames // 40)
 
@@ -361,18 +373,10 @@ def process_video(
                 for det in raw_dets:
                     det["severity"] = get_severity(det["box"], frame.shape)
 
-                # ── Robust Multi-Object Pothole Tracker ───────────────────────
-                # Associates detections across frames using IoU & centroid proximity.
+                # ── Linear Kalman Filter Object Tracking ──────────────────────
+                # Associates detections across frames using IoU & Kalman state prediction.
                 # Assigns persistent track IDs and filters out single-frame flickers.
-                if not hasattr(process_video, "_tracker") or frame_idx == 0:
-                    from detector import PotholeTracker
-                    process_video._tracker = PotholeTracker(
-                        iou_thresh=0.20,
-                        max_age=max(3, int(6 / max(1, every_n))),
-                        min_hits=2,
-                    )
-
-                tracked_dets = process_video._tracker.update(raw_dets, frame_idx=frame_idx)
+                tracked_dets = tracker.update(raw_dets, frame_idx=frame_idx)
                 last_dets = tracked_dets
                 frames_evaluated += 1
 
@@ -407,9 +411,8 @@ def process_video(
             )
 
         elapsed = time.perf_counter() - start_time
-        tracker_instance = getattr(process_video, "_tracker", None)
-        unique_count = tracker_instance.get_unique_count() if tracker_instance else max_potholes
-        track_summary = tracker_instance.get_track_summary() if tracker_instance else []
+        unique_count = tracker.get_unique_count()
+        track_summary = tracker.get_track_summary()
 
         return {
             "frames_processed":  frames_read,
@@ -422,9 +425,7 @@ def process_video(
         }
 
     finally:
-        # Always release resources, even if an exception was raised
-        if hasattr(process_video, "_tracker"):
-            delattr(process_video, "_tracker")
+        # Always release video file handles safely
         if cap is not None:
             cap.release()
         if writer is not None:
@@ -467,6 +468,7 @@ def process_image(image_bgr: np.ndarray, conf: float) -> dict:
     annotated = draw_boxes(image_bgr, enriched)
     return {
         "annotated_image":  annotated,
+        "raw_image":        image_bgr,
         "detections":       enriched,
         "detections_log":   detections_log,
         "unique_potholes":  len(enriched),
@@ -1005,6 +1007,8 @@ def render_image_tab(conf: float):
             try:
                 result = process_image(image_bgr, conf)
                 st.session_state["image_result_img"]     = result["annotated_image"]
+                st.session_state["image_raw_bgr"]        = image_bgr
+                st.session_state["image_raw_detections"] = result["detections"]
                 st.session_state["image_detections_log"] = [
                     {
                         "frame":       "N/A",
@@ -1059,6 +1063,41 @@ def render_image_tab(conf: float):
 
         st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
         render_detections_table(st.session_state.get("image_detections_log", []))
+
+        # ── Explainable AI (XAI) with Grad-CAM ─────────────────────────────────
+        raw_dets = st.session_state.get("image_raw_detections", [])
+        if raw_dets:
+            with st.expander("🔍 Explain Detections with Grad-CAM (Explainable AI - XAI)", expanded=False):
+                st.markdown(
+                    "**Gradient-weighted Class Activation Mapping (Grad-CAM):** "
+                    "Visualizes the gradients in ResPotholeNet's deepest spatial pyramid pooling (SPPF) "
+                    "layer to reveal which visual patterns (e.g. crater rim, interior depression shadow, "
+                    "asphalt texture contrast) led the CNN to trigger the detection."
+                )
+                from detector import extract_crop
+                from models.gradcam import GradCAM
+
+                model_wrapper = load_model()
+                gradcam = GradCAM(model_wrapper.model, target_layer=model_wrapper.model.sppf.cv2.conv)
+
+                for idx, det in enumerate(raw_dets):
+                    crop = extract_crop(st.session_state["image_raw_bgr"], det["box"], crop_size=128)
+                    if crop is None:
+                        continue
+
+                    heatmap, overlay, score = gradcam.generate_cam(crop)
+                    st.markdown(f"#### Pothole #{det.get('track_id', idx+1)} — Confidence: {score*100:.1f}%")
+
+                    g_col1, g_col2, g_col3 = st.columns(3)
+                    with g_col1:
+                        st.caption("Extracted Patch (128x128)")
+                        st.image(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB), use_container_width=True)
+                    with g_col2:
+                        st.caption("Grad-CAM Heatmap")
+                        st.image(heatmap, use_container_width=True)
+                    with g_col3:
+                        st.caption("Visual Attention Overlay")
+                        st.image(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB), use_container_width=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
