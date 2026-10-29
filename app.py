@@ -139,7 +139,7 @@ def draw_boxes(frame: np.ndarray, detections: list) -> np.ndarray:
     Parameters
     ----------
     frame      : BGR numpy array (original size)
-    detections : list of dicts with keys "box", "score", "severity"
+    detections : list of dicts with keys "box", "score", "severity", and optional "track_id"
 
     Returns
     -------
@@ -155,8 +155,12 @@ def draw_boxes(frame: np.ndarray, detections: list) -> np.ndarray:
         # Bounding box
         cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness=2)
 
-        # Label background + text
-        label      = f"{severity.upper()}  {score:.2f}"
+        # Label background + text with track ID if present
+        if "track_id" in det:
+            label = f"#{det['track_id']} {severity.upper()}  {score:.2f}"
+        else:
+            label = f"{severity.upper()}  {score:.2f}"
+
         font       = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.55
         thickness  = 1
@@ -353,37 +357,37 @@ def process_video(
             if frame_idx % every_n == 0:
                 raw_dets = predict(frame, conf)
 
-                # ── PLUG TRACKING / TEMPORAL FILTERING HERE ──────────────────
-                # Replace 'tracked_dets' with the output of your tracker
-                # (e.g. SORT, DeepSORT, ByteTrack).
-                #
-                # Goal: assign a stable ID to each pothole so that it is
-                # counted only once across the entire video, not once per frame.
-                #
-                # For now we pass raw_dets straight through.
-                tracked_dets = raw_dets   # <- replace with tracker output
-                # ─────────────────────────────────────────────────────────────
-
                 # Attach severity (computed from box area, not score)
-                enriched = []
-                for det in tracked_dets:
-                    sev = get_severity(det["box"], frame.shape)
-                    enriched.append({**det, "severity": sev})
+                for det in raw_dets:
+                    det["severity"] = get_severity(det["box"], frame.shape)
 
-                last_dets = enriched
+                # ── Robust Multi-Object Pothole Tracker ───────────────────────
+                # Associates detections across frames using IoU & centroid proximity.
+                # Assigns persistent track IDs and filters out single-frame flickers.
+                if not hasattr(process_video, "_tracker") or frame_idx == 0:
+                    from detector import PotholeTracker
+                    process_video._tracker = PotholeTracker(
+                        iou_thresh=0.20,
+                        max_age=max(3, int(6 / max(1, every_n))),
+                        min_hits=2,
+                    )
+
+                tracked_dets = process_video._tracker.update(raw_dets, frame_idx=frame_idx)
+                last_dets = tracked_dets
                 frames_evaluated += 1
 
-                # Log one entry per detection on this frame
+                # Log one entry per confirmed detection on this frame
                 timestamp_s = round(frame_idx / fps, 2)
-                for det in enriched:
+                for det in tracked_dets:
                     detections_log.append({
+                        "track_id":    f"#{det['track_id']}",
                         "frame":       frame_idx,
                         "timestamp_s": timestamp_s,
                         "severity":    det["severity"],
                         "score":       round(det["score"], 3),
                     })
 
-            # Track max potholes in a single frame (placeholder metric)
+            # Track max potholes in a single frame
             max_potholes = max(max_potholes, len(last_dets))
 
             # Draw and write
@@ -403,17 +407,24 @@ def process_video(
             )
 
         elapsed = time.perf_counter() - start_time
+        tracker_instance = getattr(process_video, "_tracker", None)
+        unique_count = tracker_instance.get_unique_count() if tracker_instance else max_potholes
+        track_summary = tracker_instance.get_track_summary() if tracker_instance else []
 
         return {
             "frames_processed":  frames_read,
             "frames_evaluated":  frames_evaluated,
+            "unique_potholes":   unique_count,
             "max_potholes":      max_potholes,
             "processing_time_s": round(elapsed, 2),
             "detections_log":    detections_log,
+            "track_summary":     track_summary,
         }
 
     finally:
         # Always release resources, even if an exception was raised
+        if hasattr(process_video, "_tracker"):
+            delattr(process_video, "_tracker")
         if cap is not None:
             cap.release()
         if writer is not None:
@@ -433,17 +444,36 @@ def process_image(image_bgr: np.ndarray, conf: float) -> dict:
     -------
     dict with keys:
         annotated_image : np.ndarray  (BGR)
-        detections      : list of dicts with box, score, severity
+        detections      : list of dicts with box, score, severity, track_id
+        detections_log  : list of log records
     """
     raw_dets = predict(image_bgr, conf)
 
     enriched = []
-    for det in raw_dets:
+    detections_log = []
+    for i, det in enumerate(raw_dets):
         sev = get_severity(det["box"], image_bgr.shape)
-        enriched.append({**det, "severity": sev})
+        track_id = i + 1
+        item = {**det, "severity": sev, "track_id": track_id}
+        enriched.append(item)
+        detections_log.append({
+            "track_id":    f"#{track_id}",
+            "frame":       0,
+            "timestamp_s": "N/A",
+            "severity":    sev,
+            "score":       round(det["score"], 3),
+        })
 
     annotated = draw_boxes(image_bgr, enriched)
-    return {"annotated_image": annotated, "detections": enriched}
+    return {
+        "annotated_image":  annotated,
+        "detections":       enriched,
+        "detections_log":   detections_log,
+        "unique_potholes":  len(enriched),
+        "max_potholes":     len(enriched),
+        "frames_processed": 1,
+        "frames_evaluated": 1,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -633,11 +663,11 @@ def render_sidebar() -> tuple:
                 | **Parameters** | **~858K parameters** | 100% custom (no transfer learning, no YOLO) |
                 | **Loss Function** | **Focal Loss** | α=0.25, γ=2.0 for class imbalance |
                 | **Input Size** | **128 × 128 crops** | Domain-aligned patches + Stage-1 hard negatives (shadows/cracks) |
-                | **Training Data** | **Real road images** | ~712 photos (SHA-256 deduplicated), 70/15/15 split |
+                | **Training Data** | **Real road images** | 706 unique photos (362 pothole + 344 normal, SHA-256 deduplicated) |
 
                 ---
-                **Note:** Stage 1 proposes candidate regions; Stage 2 (CNN) is the sole decision maker.
-                The bbox regression head is unused at inference (see report). Test metrics represent patch classification (84.79% F1, n=266 crops from 108 unseen photos), not end-to-end mAP.
+                **Note:** Stage 1 proposes candidate regions with road perspective & local depression contrast; Stage 2 (CNN) is the sole decision maker.
+                The bbox regression head is unused at inference (see report). Built-in IoU & centroid tracker assigns persistent IDs across frames.
                 **Course Compliance:** No YOLO, Ultralytics, torchvision backbones, or pretrained weights.
                 """
             )
@@ -655,17 +685,19 @@ def render_sidebar() -> tuple:
 
 
 def render_metric_cards(stats: dict):
-    """Render 3 styled metric cards from a stats dict."""
-    c1, c2, c3 = st.columns(3)
+    """Render 4 styled metric cards from a stats dict."""
+    c1, c2, c3, c4 = st.columns(4)
 
     inferred = stats.get("frames_evaluated", stats["frames_processed"])
+    unique_potholes = stats.get("unique_potholes", stats.get("max_potholes", 0))
+
     with c1:
         st.markdown(
             f"""
             <div class="metric-card">
-                <div class="metric-label">Frames Processed</div>
-                <div class="metric-value">{stats['frames_processed']}</div>
-                <div class="metric-note">{inferred} evaluated by CNN</div>
+                <div class="metric-label">Unique Potholes</div>
+                <div class="metric-value">{unique_potholes}</div>
+                <div class="metric-note">Persistent tracked hazards</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -674,7 +706,7 @@ def render_metric_cards(stats: dict):
         st.markdown(
             f"""
             <div class="metric-card">
-                <div class="metric-label">Max Potholes / Frame</div>
+                <div class="metric-label">Max / Single Frame</div>
                 <div class="metric-value">{stats['max_potholes']}</div>
                 <div class="metric-note">Peak simultaneous detections</div>
             </div>
@@ -685,9 +717,20 @@ def render_metric_cards(stats: dict):
         st.markdown(
             f"""
             <div class="metric-card">
+                <div class="metric-label">Frames Evaluated</div>
+                <div class="metric-value">{inferred}</div>
+                <div class="metric-note">{stats['frames_processed']} total frames</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c4:
+        st.markdown(
+            f"""
+            <div class="metric-card">
                 <div class="metric-label">Processing Time</div>
                 <div class="metric-value">{stats['processing_time_s']}s</div>
-                <div class="metric-note">Total video pipeline runtime</div>
+                <div class="metric-note">Total pipeline runtime</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -707,11 +750,31 @@ def render_detections_table(log: list):
     import pandas as pd
 
     df = pd.DataFrame(log)
-    df.columns = ["Frame #", "Timestamp (s)", "Severity", "Confidence"]
+    if "track_id" in df.columns:
+        cols = [c for c in ["track_id", "frame", "timestamp_s", "severity", "score"] if c in df.columns]
+        df = df[cols]
+        col_names = {
+            "track_id": "Track ID",
+            "frame": "Frame #",
+            "timestamp_s": "Timestamp (s)",
+            "severity": "Severity",
+            "score": "Confidence",
+        }
+        df = df.rename(columns=col_names)
+    else:
+        cols = [c for c in ["frame", "timestamp_s", "severity", "score"] if c in df.columns]
+        df = df[cols]
+        col_names = {
+            "frame": "Frame #",
+            "timestamp_s": "Timestamp (s)",
+            "severity": "Severity",
+            "score": "Confidence",
+        }
+        df = df.rename(columns=col_names)
 
     # Maintain chronological order so potholes appear sequentially in time
     try:
-        if df["Timestamp (s)"].iloc[0] != "N/A":
+        if "Timestamp (s)" in df.columns and df["Timestamp (s)"].iloc[0] != "N/A":
             df["_ts"] = pd.to_numeric(df["Timestamp (s)"], errors="coerce").fillna(0)
             df = df.sort_values("_ts").drop(columns=["_ts"]).reset_index(drop=True)
     except Exception:

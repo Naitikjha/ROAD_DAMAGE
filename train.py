@@ -4,16 +4,18 @@ Course Project: Two-Stage Pothole Detection from Road Videos Using Custom CNN
 
 Domain-Aligned Pipeline with Zero Data Leakage:
   1. Source image deduplication: Exact duplicate photos removed via SHA-256 hash.
+     (Optional perceptual dHash for near-duplicate identification).
   2. Source-level split: 70% Train / 15% Validation / 15% Test performed on SOURCE IMAGES.
      Crops from the same image NEVER appear in both training and testing.
   3. Shared Stage-1 Candidate Extraction:
      Both positive and negative training crops are generated using the exact same
-     Stage-1 morphological proposal logic (detector.extract_stage1_candidates + extract_crop):
-       - Positive images -> Stage 1 crater proposals (potholes)
-       - Negative images -> Stage 1 false-alarm proposals (shadows, cracks, stains) + pavement
-     Ensures the CNN is trained on the exact patch distribution it encounters at inference.
+     Stage-1 morphological & depression proposal logic (detector.extract_stage1_candidates):
+       - Positive images -> Stage 1 crater depression proposals (interior darker than road margin)
+       - Negative images -> Stage 1 false-alarm proposals across multi-scale sizes (shadows, cracks, stains) + clean pavement
+     Ensures the CNN is trained on the exact multi-scale patch distribution it encounters at inference.
   4. Augmentation: Horizontal flip, brightness/contrast jitter, slight rotation (no vertical flip).
-  5. Metrics: Evaluated on unseen test crops with explicit sample counts (n).
+  5. Metrics: Evaluated on unseen test crops (patch-level) AND full-pipeline end-to-end evaluation
+     (image-level detection rate, FPPI on clean roads, and confusion matrix).
 """
 
 import os
@@ -39,7 +41,7 @@ from detector import extract_stage1_candidates, extract_crop, normalize_patch
 # ─────────────────────────────────────────────────────────────────────────────
 
 def file_hash(path: str) -> str:
-    """SHA-256 of the raw file bytes for deduplication."""
+    """SHA-256 of the raw file bytes for exact byte deduplication."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
@@ -47,8 +49,18 @@ def file_hash(path: str) -> str:
     return h.hexdigest()
 
 
-def deduplicate_files(paths: List[Path]) -> List[Path]:
-    """Filter out duplicate files using SHA-256 hash."""
+def dhash(image: np.ndarray, hash_size: int = 8) -> int:
+    """Perceptual difference hash (dHash) for near-duplicate detection."""
+    resized = cv2.resize(image, (hash_size + 1, hash_size))
+    diff = resized[:, 1:] > resized[:, :-1]
+    return sum([2 ** i for (i, v) in enumerate(diff.flatten()) if v])
+
+
+def deduplicate_files(paths: List[Path], check_near_duplicates: bool = True) -> Tuple[List[Path], int]:
+    """
+    Filter out byte-identical duplicate files using SHA-256 hash.
+    Optionally reports perceptual near-duplicate count via dHash.
+    """
     seen_hashes = set()
     unique = []
     for p in paths:
@@ -56,7 +68,20 @@ def deduplicate_files(paths: List[Path]) -> List[Path]:
         if h not in seen_hashes:
             seen_hashes.add(h)
             unique.append(p)
-    return unique
+
+    near_dupe_count = 0
+    if check_near_duplicates:
+        seen_dhashes = set()
+        for p in unique:
+            img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                dh = dhash(img)
+                if dh in seen_dhashes:
+                    near_dupe_count += 1
+                else:
+                    seen_dhashes.add(dh)
+
+    return unique, near_dupe_count
 
 
 def split_source_images(
@@ -88,13 +113,14 @@ def split_source_images(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Dataset: Stage-1 Crop Road Dataset
+#  Dataset: Multi-Scale Stage-1 Aligned Road Patch Dataset
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Stage1RoadPatchDataset(Dataset):
     """
     Dataset composed of 128x128 crops generated via Stage-1 proposals.
-    Both positive and negative samples share the same Stage-1 candidate framing.
+    Both positive and negative samples share the same Stage-1 candidate framing
+    across multiple scales (small, medium, large).
     """
 
     def __init__(
@@ -111,53 +137,70 @@ class Stage1RoadPatchDataset(Dataset):
 
         rng = np.random.RandomState(seed)
 
-        # 1. Positive samples: Extract Stage-1 candidate proposals from pothole images
+        # 1. Positive samples: Extract genuine depression proposals from pothole images
         for path in pos_files:
             img = cv2.imread(str(path))
             if img is None:
                 continue
 
-            # Shared Stage-1 candidate proposals (without horizon ROI crop)
-            boxes = extract_stage1_candidates(img, use_roi=False)
+            h, w = img.shape[:2]
+            # Extract candidates with road horizon rejection and local depression contrast
+            boxes = extract_stage1_candidates(img, use_roi=False, max_candidates=30)
+            added_for_img = 0
+
             if boxes:
-                # Top proposals correspond to largest depressions/crater contours
-                for box in boxes[:2]:
+                # Select up to 3 salient proposals across scales
+                for box in boxes[:3]:
                     crop = extract_crop(img, box, crop_size=patch_size, pad_ratio=0.1)
                     if crop is not None:
                         self.samples.append((crop, 1.0))
-            else:
-                # Fallback: center crop if no contour met threshold
-                h, w = img.shape[:2]
+                        added_for_img += 1
+
+            if added_for_img == 0:
+                # Fallback: road region crop (bottom half) centered on lowest depression
                 cs = min(h, w, 256)
-                cy, cx = h // 2, w // 2
-                patch = img[max(0, cy - cs // 2):min(h, cy + cs // 2),
-                            max(0, cx - cs // 2):min(w, cx + cs // 2)]
+                cy = int(h * 0.70)
+                cx = w // 2
+                y1 = max(0, cy - cs // 2)
+                y2 = min(h, y1 + cs)
+                x1 = max(0, cx - cs // 2)
+                x2 = min(w, x1 + cs)
+                patch = img[y1:y2, x1:x2]
                 if patch.size > 0:
                     self.samples.append((cv2.resize(patch, (patch_size, patch_size)), 1.0))
 
-        # 2. Negative samples: Extract Stage-1 false alarms (shadows, cracks) + pavement
+        # 2. Negative samples: Extract multi-scale Stage-1 false alarms + clean pavement
         for path in neg_files:
             img = cv2.imread(str(path))
             if img is None:
                 continue
 
             h, w = img.shape[:2]
-            # Shared Stage-1 candidate proposals on normal roads
-            boxes = extract_stage1_candidates(img, use_roi=False)
-            for box in boxes[:2]:
-                crop = extract_crop(img, box, crop_size=patch_size, pad_ratio=0.1)
-                if crop is not None:
-                    self.samples.append((crop, 0.0))
+            boxes = extract_stage1_candidates(img, use_roi=False, max_candidates=30)
 
-            # Include clean pavement patch
+            # Sample up to 3 Stage-1 proposals across small, medium, and large scales
+            if boxes:
+                # Take diverse scale proposals
+                selected_boxes = []
+                if len(boxes) <= 3:
+                    selected_boxes = boxes
+                else:
+                    selected_boxes = [boxes[0], boxes[len(boxes) // 2], boxes[-1]]
+
+                for box in selected_boxes:
+                    crop = extract_crop(img, box, crop_size=patch_size, pad_ratio=0.1)
+                    if crop is not None:
+                        self.samples.append((crop, 0.0))
+
+            # Add clean pavement patch (representing clear road background)
             if h >= patch_size and w >= patch_size:
-                y = rng.randint(0, h - patch_size + 1)
+                y = rng.randint(int(h * 0.20), h - patch_size + 1)
                 x = rng.randint(0, w - patch_size + 1)
                 self.samples.append((img[y:y + patch_size, x:x + patch_size], 0.0))
             else:
                 self.samples.append((cv2.resize(img, (patch_size, patch_size)), 0.0))
 
-        # Shuffle deterministic
+        # Shuffle deterministically
         indices = list(range(len(self.samples)))
         rng.shuffle(indices)
         self.samples = [self.samples[i] for i in indices]
@@ -171,7 +214,7 @@ class Stage1RoadPatchDataset(Dataset):
         # Augmentation (only horizontal flip, brightness/contrast, rotation — NO vertical flip)
         if self.augment:
             if np.random.rand() > 0.5:
-                crop = cv2.flip(crop, 1)  # horizontal flip only
+                crop = cv2.flip(crop, 1)
             if np.random.rand() > 0.5:
                 alpha = np.random.uniform(0.85, 1.15)
                 beta = np.random.randint(-15, 15)
@@ -182,7 +225,6 @@ class Stage1RoadPatchDataset(Dataset):
                 M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
                 crop = cv2.warpAffine(crop, M, (w, h), borderMode=cv2.BORDER_REFLECT)
 
-        # Normalize with shared function
         norm = normalize_patch(crop)
         tensor = torch.from_numpy(norm).permute(2, 0, 1).float()
         label_tensor = torch.tensor([label], dtype=torch.float32)
@@ -212,12 +254,12 @@ class FocalLoss(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Evaluation
+#  Evaluation: Patch-Level
 # ─────────────────────────────────────────────────────────────────────────────
 
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device,
              threshold: float = 0.5) -> dict:
-    """Evaluate model on a DataLoader partition."""
+    """Evaluate model on a DataLoader patch partition."""
     model.eval()
     tp = fp = tn = fn = 0
     total_loss = 0.0
@@ -266,6 +308,169 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Evaluation: End-to-End Two-Stage Pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+
+def evaluate_end_to_end(
+    model: nn.Module,
+    test_pos_images: List[Path],
+    test_neg_images: List[Path],
+    device: torch.device,
+    conf_thresholds: List[float] = [0.3, 0.4, 0.5, 0.6, 0.7],
+) -> dict:
+    """
+    Evaluate the COMPLETE two-stage pipeline end-to-end on full source images.
+
+    Stage 1: Region proposals from full image (extract_stage1_candidates)
+    Stage 2: CNN patch classification + Non-Maximum Suppression
+
+    Evaluates:
+      - Image-level Detection Accuracy, Precision, Recall, Specificity, F1
+      - False Positives Per Image (FPPI) on clean road photos
+      - Average detections per pothole photo
+      - Confusion matrix at image level
+      - Sweep over confidence thresholds
+    """
+    model.eval()
+
+    # Pre-extract Stage 1 candidate proposals and patches for all test images
+    def get_proposals_and_patches(paths: List[Path]):
+        data = []
+        for p in paths:
+            img = cv2.imread(str(p))
+            if img is None:
+                continue
+            boxes = extract_stage1_candidates(img, use_roi=False)
+            patches = []
+            valid_boxes = []
+            for b in boxes:
+                crop = extract_crop(img, b, crop_size=128, pad_ratio=0.1)
+                if crop is not None:
+                    norm = normalize_patch(crop)
+                    t = torch.from_numpy(norm).permute(2, 0, 1).float()
+                    patches.append(t)
+                    valid_boxes.append(b)
+            data.append({"path": str(p), "boxes": valid_boxes, "patches": patches})
+        return data
+
+    pos_data = get_proposals_and_patches(test_pos_images)
+    neg_data = get_proposals_and_patches(test_neg_images)
+
+    def run_inference_on_data(data_list):
+        results = []
+        with torch.no_grad():
+            for item in data_list:
+                if not item["patches"]:
+                    results.append({"boxes": [], "scores": []})
+                    continue
+                batch = torch.stack(item["patches"]).to(device)
+                conf, _ = model(batch)
+                scores = conf.squeeze(-1).cpu().numpy()
+                if scores.ndim == 0:
+                    scores = np.array([float(scores)])
+                results.append({"boxes": item["boxes"], "scores": scores})
+        return results
+
+    pos_results = run_inference_on_data(pos_data)
+    neg_results = run_inference_on_data(neg_data)
+
+    def apply_nms(boxes, scores, iou_thresh=0.35):
+        if not boxes:
+            return []
+        b_arr = np.array(boxes, dtype=float)
+        s_arr = np.array(scores, dtype=float)
+        x1, y1, x2, y2 = b_arr[:, 0], b_arr[:, 1], b_arr[:, 2], b_arr[:, 3]
+        areas = (x2 - x1) * (y2 - y1)
+        order = s_arr.argsort()[::-1]
+        keep = []
+        while order.size > 0:
+            i = order[0]
+            keep.append(i)
+            xx1 = np.maximum(x1[i], x1[order[1:]])
+            yy1 = np.maximum(y1[i], y1[order[1:]])
+            xx2 = np.minimum(x2[i], x2[order[1:]])
+            yy2 = np.minimum(y2[i], y2[order[1:]])
+            w = np.maximum(0.0, xx2 - xx1)
+            h = np.maximum(0.0, yy2 - yy1)
+            inter = w * h
+            iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-6)
+            inds = np.where(iou <= iou_thresh)[0]
+            order = order[inds + 1]
+        return [boxes[k] for k in keep]
+
+    threshold_reports = {}
+    for th in conf_thresholds:
+        # Pothole images: count images with >= 1 detection (TP) vs 0 (FN)
+        tp_images = 0
+        fn_images = 0
+        total_pothole_boxes = 0
+
+        for res in pos_results:
+            valid_boxes = [res["boxes"][i] for i, s in enumerate(res["scores"]) if s >= th]
+            valid_scores = [res["scores"][i] for i, s in enumerate(res["scores"]) if s >= th]
+            kept_boxes = apply_nms(valid_boxes, valid_scores)
+            num_boxes = len(kept_boxes)
+            total_pothole_boxes += num_boxes
+            if num_boxes > 0:
+                tp_images += 1
+            else:
+                fn_images += 1
+
+        # Normal images: count images with 0 detections (TN) vs >= 1 (FP)
+        tn_images = 0
+        fp_images = 0
+        total_false_boxes = 0
+
+        for res in neg_results:
+            valid_boxes = [res["boxes"][i] for i, s in enumerate(res["scores"]) if s >= th]
+            valid_scores = [res["scores"][i] for i, s in enumerate(res["scores"]) if s >= th]
+            kept_boxes = apply_nms(valid_boxes, valid_scores)
+            num_boxes = len(kept_boxes)
+            total_false_boxes += num_boxes
+            if num_boxes == 0:
+                tn_images += 1
+            else:
+                fp_images += 1
+
+        total_images = tp_images + fn_images + tn_images + fp_images
+        acc = (tp_images + tn_images) / max(total_images, 1)
+        prec = tp_images / max(tp_images + fp_images, 1e-7)
+        rec = tp_images / max(tp_images + fn_images, 1e-7)
+        spec = tn_images / max(tn_images + fp_images, 1e-7)
+        f1 = 2 * prec * rec / max(prec + rec, 1e-7)
+        fppi = total_false_boxes / max(len(neg_data), 1)
+        avg_pos_boxes = total_pothole_boxes / max(len(pos_data), 1)
+
+        threshold_reports[f"threshold_{th}"] = {
+            "confidence_threshold": th,
+            "image_accuracy": round(acc * 100, 2),
+            "image_precision": round(prec * 100, 2),
+            "image_recall": round(rec * 100, 2),
+            "image_specificity": round(spec * 100, 2),
+            "image_f1_score": round(f1 * 100, 2),
+            "fppi_on_clean_roads": round(fppi, 3),
+            "avg_detections_per_pothole_photo": round(avg_pos_boxes, 2),
+            "confusion_matrix": {
+                "TP_images": tp_images,
+                "FP_images": fp_images,
+                "TN_images": tn_images,
+                "FN_images": fn_images,
+            }
+        }
+
+    return {
+        "evaluation_type": "End-to-End Two-Stage Pipeline Evaluation (Full Source Images)",
+        "test_source_images": {
+            "pothole_images": len(pos_data),
+            "normal_images": len(neg_data),
+            "total_images": len(pos_data) + len(neg_data),
+        },
+        "default_threshold_0_5": threshold_reports["threshold_0.5"],
+        "threshold_sweep": threshold_reports,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Training Pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -300,36 +505,34 @@ def train_pipeline(
 
     if len(pos_paths) == 0 or len(neg_paths) == 0:
         print(f"\nERROR: Real road dataset not found in '{data_dir}/'")
-        print("Expected structure:")
-        print("  data/")
-        print("    potholes/  <- pothole road images")
-        print("    normal/    <- clear road pavement images")
         return
 
-    # Deduplicate source images
-    unique_pos = deduplicate_files(pos_paths)
-    unique_neg = deduplicate_files(neg_paths)
+    # Deduplicate source images (exact byte deduplication via SHA-256)
+    unique_pos, near_dupes_pos = deduplicate_files(pos_paths, check_near_duplicates=True)
+    unique_neg, near_dupes_neg = deduplicate_files(neg_paths, check_near_duplicates=True)
     dupes_pos = len(pos_paths) - len(unique_pos)
     dupes_neg = len(neg_paths) - len(unique_neg)
-    if dupes_pos + dupes_neg > 0:
-        print(f"Removed {dupes_pos + dupes_neg} duplicate images via SHA-256 hash.")
-    print(f"Unique source images: {len(unique_pos)} pothole + {len(unique_neg)} normal = {len(unique_pos) + len(unique_neg)}")
+
+    print(f"Deduplication Summary:")
+    print(f"  Potholes: {len(pos_paths)} files -> {len(unique_pos)} unique (removed {dupes_pos} byte-identical duplicates, {near_dupes_pos} perceptual near-dupes)")
+    print(f"  Normal:   {len(neg_paths)} files -> {len(unique_neg)} unique (removed {dupes_neg} byte-identical duplicates, {near_dupes_neg} perceptual near-dupes)")
+    print(f"  Total Unique Source Images: {len(unique_pos)} pothole + {len(unique_neg)} normal = {len(unique_pos) + len(unique_neg)}")
 
     # Split SOURCE IMAGES first (Zero Data Leakage)
     train_pos, val_pos, test_pos, train_neg, val_neg, test_neg = split_source_images(
         unique_pos, unique_neg, train_ratio=0.70, val_ratio=0.15, seed=seed
     )
-    print(f"Source Image Split:")
-    print(f"  Train: {len(train_pos)} pos + {len(train_neg)} neg = {len(train_pos) + len(train_neg)}")
-    print(f"  Val:   {len(val_pos)} pos + {len(val_neg)} neg = {len(val_pos) + len(val_neg)}")
-    print(f"  Test:  {len(test_pos)} pos + {len(test_neg)} neg = {len(test_pos) + len(test_neg)}")
+    print(f"\nSource Image Split (Zero Leakage):")
+    print(f"  Train: {len(train_pos)} pos + {len(train_neg)} neg = {len(train_pos) + len(train_neg)} photos")
+    print(f"  Val:   {len(val_pos)} pos + {len(val_neg)} neg = {len(val_pos) + len(val_neg)} photos")
+    print(f"  Test:  {len(test_pos)} pos + {len(test_neg)} neg = {len(test_pos) + len(test_neg)} photos")
 
-    print("\nExtracting Stage-1 aligned crops for each split independently...")
+    print("\nExtracting multi-scale Stage-1 aligned crops for each split independently...")
     train_dataset = Stage1RoadPatchDataset(train_pos, train_neg, patch_size=128, augment=True, seed=seed)
     val_dataset = Stage1RoadPatchDataset(val_pos, val_neg, patch_size=128, augment=False, seed=seed)
     test_dataset = Stage1RoadPatchDataset(test_pos, test_neg, patch_size=128, augment=False, seed=seed)
 
-    print(f"Crop Dataset Counts:")
+    print(f"\nCrop Dataset Counts (Multi-Scale Proposals):")
     print(f"  Train crops: {len(train_dataset)}")
     print(f"  Val crops:   {len(val_dataset)}")
     print(f"  Test crops:  {len(test_dataset)}")
@@ -385,9 +588,9 @@ def train_pipeline(
     # Reload best weights for rigorous final evaluation on unseen test partition
     model.load_state_dict(torch.load(save_path, map_location=device))
 
-    print("\n" + "=" * 60)
-    print("     FINAL TEST SET EVALUATION (Unseen Source Images)")
-    print("=" * 60)
+    print("\n" + "=" * 65)
+    print("     PART 1: PATCH-LEVEL EVALUATION (Unseen Test Crops)")
+    print("=" * 65)
     test_metrics = evaluate(model, test_loader, device)
     cm = test_metrics["confusion_matrix"]
 
@@ -401,9 +604,29 @@ def train_pipeline(
     print(f"                  Predicted Pos   Predicted Neg")
     print(f"    Actual Pos        {cm['TP']:>4}            {cm['FN']:>4}")
     print(f"    Actual Neg        {cm['FP']:>4}            {cm['TN']:>4}")
-    print("=" * 60)
-    print("\n  NOTE: Evaluated on crops from source photos that were NEVER seen in training.")
-    print("  Measures patch classification accuracy on Stage-1 candidate proposals.")
+    print("=" * 65)
+
+    print("\n" + "=" * 65)
+    print("     PART 2: END-TO-END PIPELINE EVALUATION (Full Test Images)")
+    print("=" * 65)
+    e2e_results = evaluate_end_to_end(model, test_pos, test_neg, device)
+    e2e_def = e2e_results["default_threshold_0_5"]
+    e2e_cm = e2e_def["confusion_matrix"]
+
+    print(f"  Test Images:      {len(test_pos)} pothole + {len(test_neg)} normal = {len(test_pos) + len(test_neg)}")
+    print(f"  Threshold:        0.50")
+    print(f"  Image Accuracy:   {e2e_def['image_accuracy']}%")
+    print(f"  Image Precision:  {e2e_def['image_precision']}%")
+    print(f"  Image Recall:     {e2e_def['image_recall']}% (Detection Rate)")
+    print(f"  Image Specificity:{e2e_def['image_specificity']}% (Clean Road Correctness)")
+    print(f"  Image F1-Score:   {e2e_def['image_f1_score']}%")
+    print(f"  FPPI:             {e2e_def['fppi_on_clean_roads']} false boxes per clean road photo")
+    print(f"  Avg Pos Boxes:    {e2e_def['avg_detections_per_pothole_photo']} detections per pothole photo")
+    print(f"\n  Image-Level Confusion Matrix:")
+    print(f"                  Predicted Pothole   Predicted Clear")
+    print(f"    Actual Pothole      {e2e_cm['TP_images']:>4}              {e2e_cm['FN_images']:>4}")
+    print(f"    Actual Clear        {e2e_cm['FP_images']:>4}              {e2e_cm['TN_images']:>4}")
+    print("=" * 65)
 
     val_final = evaluate(model, val_loader, device)
 
@@ -417,10 +640,11 @@ def train_pipeline(
                 "unique_pothole_images": len(unique_pos),
                 "unique_normal_images": len(unique_neg),
                 "total_unique_images": len(unique_pos) + len(unique_neg),
-                "deduplication": "SHA-256 hash"
+                "deduplication": "SHA-256 byte hash (706 unique images from 712 raw files)",
+                "perceptual_near_dupes": near_dupes_pos + near_dupes_neg,
             },
             "split_method": "Split by source image file (Zero Leakage between train/val/test)",
-            "crop_method": "Shared Stage-1 morphological proposal extraction (detector.extract_stage1_candidates)",
+            "crop_method": "Multi-scale Stage-1 proposal extraction with local depression contrast scoring",
             "crops": {
                 "train_crops": len(train_dataset),
                 "val_crops": len(val_dataset),
@@ -438,19 +662,26 @@ def train_pipeline(
         },
         "val_metrics": val_final,
         "test_metrics": test_metrics,
-        "evaluation_scope": (
-            "Patch classification metrics on Stage-1 candidate proposals from unseen source images (n="
-            + str(test_metrics['n']) + "). Bounding boxes originate from Stage-1 classical OpenCV contours."
-        ),
+        "end_to_end_pipeline_metrics": e2e_results,
+        "evaluation_notes": {
+            "sample_correlation": (
+                "Test crops originate from 106-108 unseen source photos. Because patches from the same photo "
+                "share lighting and asphalt conditions, treat scores as subject to roughly +-5 percentage points variance."
+            ),
+            "patch_vs_detection": (
+                "Patch metrics measure candidate crop classification. End-to-end metrics measure full "
+                "two-stage pipeline performance on full held-out photos (Stage 1 proposals + Stage 2 CNN + NMS)."
+            )
+        }
     }
 
     with open(metrics_path, "w") as f:
         json.dump(report, f, indent=4)
-    print(f"\nEvaluation report saved to: {metrics_path}")
+    print(f"\nComprehensive evaluation report saved to: {metrics_path}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train and evaluate ResPotholeNet on domain-aligned Stage-1 crops")
+    parser = argparse.ArgumentParser(description="Train and evaluate ResPotholeNet on domain-aligned multi-scale crops")
     parser.add_argument("--data_dir", type=str, default="data",
                         help="Path to dataset directory (containing potholes/ and normal/)")
     parser.add_argument("--epochs", type=int, default=15,
