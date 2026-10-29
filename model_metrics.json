@@ -5,21 +5,22 @@
     "dataset": {
         "source": "data",
         "source_images": {
-            "unique_pothole_images": 362,
-            "unique_normal_images": 344,
-            "total_unique_images": 706,
-            "deduplication": "SHA-256 byte hash (706 unique images from 712 raw files)",
-            "perceptual_near_dupes": 3
+            "raw_pothole_images": 364,
+            "raw_normal_images": 348,
+            "clean_pothole_images": 361,
+            "clean_normal_images": 344,
+            "total_clean_images": 705,
+            "byte_identical_duplicates_removed": 6,
+            "perceptual_near_duplicates_removed": 1
         },
-        "split_method": "Split by source image file (Zero Leakage between train/val/test)",
-        "crop_method": "Shared Stage-1 morphological proposal extraction (detector.extract_stage1_candidates)",
+        "split_method": "Deterministic sorted split by source photo (Zero Leakage)",
+        "crop_method": "Symmetric Stage-1 proposal sampling (top 2 proposals per image for both classes)",
         "crops": {
-            "train_crops": 1222,
-            "val_crops": 258,
-            "test_crops": 266,
-            "total_crops": 1746
-        },
-        "test_partition_note": "Held-out test set comprises 108 source images (55 pothole + 53 normal) yielding 266 evaluated crops."
+            "train_crops": 915,
+            "val_crops": 196,
+            "test_crops": 199,
+            "total_crops": 1310
+        }
     },
     "training": {
         "epochs": 15,
@@ -29,140 +30,186 @@
         "scheduler": "CosineAnnealingLR",
         "augmentation": "Horizontal flip, brightness/contrast jitter, rotation (+-15 deg). NO vertical flip."
     },
-    "val_metrics": {
-        "n": 258,
-        "loss": 0.0652,
-        "accuracy": 81.4,
-        "precision": 79.21,
-        "recall": 74.77,
-        "f1_score": 76.92,
-        "confusion_matrix": {
-            "TP": 80,
-            "FP": 21,
-            "TN": 130,
-            "FN": 27
-        }
-    },
-    "test_metrics": {
-        "n": 266,
-        "loss": 0.0549,
-        "accuracy": 87.59,
-        "precision": 85.19,
-        "recall": 84.4,
-        "f1_score": 84.79,
-        "confusion_matrix": {
-            "TP": 92,
-            "FP": 16,
-            "TN": 141,
-            "FN": 17
-        }
-    },
-    "evaluation_scope": "Patch classification metrics on Stage-1 candidate proposals from unseen source images (n=266). Bounding boxes originate from Stage-1 classical OpenCV contours.",
-    "end_to_end_pipeline_metrics": {
-        "evaluation_type": "End-to-End Two-Stage Pipeline Evaluation (Full Source Images)",
-        "test_source_images": {
-            "pothole_images": 55,
-            "normal_images": 53,
-            "total_images": 108
-        },
-        "default_threshold_0_5": {
+    "validation_threshold_tuning": {
+        "selected_threshold": 0.5,
+        "selection_criterion": "Maximize Validation Image-Level F1 Score",
+        "val_results_at_selected_threshold": {
             "confidence_threshold": 0.5,
-            "image_accuracy": 80.56,
-            "image_precision": 72.37,
-            "image_recall": 100.0,
-            "image_specificity": 60.38,
-            "image_f1_score": 83.97,
-            "fppi_on_clean_roads": 0.981,
-            "avg_detections_per_pothole_photo": 11.78,
+            "image_accuracy": 79.05,
+            "image_precision": 71.62,
+            "image_recall": 98.15,
+            "image_specificity": 58.82,
+            "image_f1_score": 82.81,
+            "fppi_on_clean_roads": 1.255,
+            "avg_detections_per_pothole_photo": 6.46,
             "confusion_matrix": {
-                "TP_images": 55,
+                "TP_images": 53,
                 "FP_images": 21,
-                "TN_images": 32,
-                "FN_images": 0
+                "TN_images": 30,
+                "FN_images": 1
             }
         },
-        "threshold_sweep": {
+        "val_threshold_sweep": {
             "threshold_0.3": {
                 "confidence_threshold": 0.3,
-                "image_accuracy": 63.89,
-                "image_precision": 58.51,
-                "image_recall": 100.0,
-                "image_specificity": 26.42,
-                "image_f1_score": 73.83,
-                "fppi_on_clean_roads": 3.66,
-                "avg_detections_per_pothole_photo": 13.67,
+                "image_accuracy": 69.52,
+                "image_precision": 63.1,
+                "image_recall": 98.15,
+                "image_specificity": 39.22,
+                "image_f1_score": 76.81,
+                "fppi_on_clean_roads": 2.922,
+                "avg_detections_per_pothole_photo": 7.96,
                 "confusion_matrix": {
-                    "TP_images": 55,
-                    "FP_images": 39,
-                    "TN_images": 14,
-                    "FN_images": 0
+                    "TP_images": 53,
+                    "FP_images": 31,
+                    "TN_images": 20,
+                    "FN_images": 1
                 }
             },
             "threshold_0.4": {
                 "confidence_threshold": 0.4,
-                "image_accuracy": 73.15,
-                "image_precision": 65.48,
-                "image_recall": 100.0,
-                "image_specificity": 45.28,
-                "image_f1_score": 79.14,
-                "fppi_on_clean_roads": 2.019,
-                "avg_detections_per_pothole_photo": 12.98,
+                "image_accuracy": 75.24,
+                "image_precision": 67.95,
+                "image_recall": 98.15,
+                "image_specificity": 50.98,
+                "image_f1_score": 80.3,
+                "fppi_on_clean_roads": 2.059,
+                "avg_detections_per_pothole_photo": 7.35,
                 "confusion_matrix": {
-                    "TP_images": 55,
-                    "FP_images": 29,
-                    "TN_images": 24,
-                    "FN_images": 0
+                    "TP_images": 53,
+                    "FP_images": 25,
+                    "TN_images": 26,
+                    "FN_images": 1
                 }
             },
             "threshold_0.5": {
                 "confidence_threshold": 0.5,
-                "image_accuracy": 80.56,
-                "image_precision": 72.37,
-                "image_recall": 100.0,
-                "image_specificity": 60.38,
-                "image_f1_score": 83.97,
-                "fppi_on_clean_roads": 0.981,
-                "avg_detections_per_pothole_photo": 11.78,
+                "image_accuracy": 79.05,
+                "image_precision": 71.62,
+                "image_recall": 98.15,
+                "image_specificity": 58.82,
+                "image_f1_score": 82.81,
+                "fppi_on_clean_roads": 1.255,
+                "avg_detections_per_pothole_photo": 6.46,
                 "confusion_matrix": {
-                    "TP_images": 55,
+                    "TP_images": 53,
                     "FP_images": 21,
-                    "TN_images": 32,
-                    "FN_images": 0
+                    "TN_images": 30,
+                    "FN_images": 1
                 }
             },
             "threshold_0.6": {
                 "confidence_threshold": 0.6,
-                "image_accuracy": 88.89,
-                "image_precision": 82.09,
-                "image_recall": 100.0,
-                "image_specificity": 77.36,
-                "image_f1_score": 90.16,
-                "fppi_on_clean_roads": 0.509,
-                "avg_detections_per_pothole_photo": 9.96,
+                "image_accuracy": 80.0,
+                "image_precision": 75.38,
+                "image_recall": 90.74,
+                "image_specificity": 68.63,
+                "image_f1_score": 82.35,
+                "fppi_on_clean_roads": 0.706,
+                "avg_detections_per_pothole_photo": 5.04,
                 "confusion_matrix": {
-                    "TP_images": 55,
-                    "FP_images": 12,
-                    "TN_images": 41,
-                    "FN_images": 0
+                    "TP_images": 49,
+                    "FP_images": 16,
+                    "TN_images": 35,
+                    "FN_images": 5
                 }
             },
             "threshold_0.7": {
                 "confidence_threshold": 0.7,
-                "image_accuracy": 90.74,
-                "image_precision": 88.14,
-                "image_recall": 94.55,
-                "image_specificity": 86.79,
-                "image_f1_score": 91.23,
-                "fppi_on_clean_roads": 0.245,
-                "avg_detections_per_pothole_photo": 7.65,
+                "image_accuracy": 80.95,
+                "image_precision": 84.0,
+                "image_recall": 77.78,
+                "image_specificity": 84.31,
+                "image_f1_score": 80.77,
+                "fppi_on_clean_roads": 0.353,
+                "avg_detections_per_pothole_photo": 3.76,
                 "confusion_matrix": {
-                    "TP_images": 52,
-                    "FP_images": 7,
-                    "TN_images": 46,
-                    "FN_images": 3
+                    "TP_images": 42,
+                    "FP_images": 8,
+                    "TN_images": 43,
+                    "FN_images": 12
+                }
+            },
+            "threshold_0.8": {
+                "confidence_threshold": 0.8,
+                "image_accuracy": 75.24,
+                "image_precision": 88.89,
+                "image_recall": 59.26,
+                "image_specificity": 92.16,
+                "image_f1_score": 71.11,
+                "fppi_on_clean_roads": 0.098,
+                "avg_detections_per_pothole_photo": 2.43,
+                "confusion_matrix": {
+                    "TP_images": 32,
+                    "FP_images": 4,
+                    "TN_images": 47,
+                    "FN_images": 22
                 }
             }
         }
     },
-    "statistical_confidence_note": "Because crops are mined from 108 source photos, crops from the same photo share illumination and asphalt texture. Consequently, patch metrics carry an estimated +-5% variance, which accounts for differences between validation (76.9%) and test (84.8%)."
+    "val_metrics": {
+        "n": 196,
+        "loss": 0.1065,
+        "accuracy": 85.2,
+        "precision": 89.47,
+        "recall": 81.73,
+        "f1_score": 85.43,
+        "confusion_matrix": {
+            "TP": 85,
+            "FP": 10,
+            "TN": 82,
+            "FN": 19
+        }
+    },
+    "test_metrics": {
+        "n": 199,
+        "loss": 0.0364,
+        "accuracy": 86.93,
+        "precision": 92.55,
+        "recall": 82.08,
+        "f1_score": 87.0,
+        "confusion_matrix": {
+            "TP": 87,
+            "FP": 7,
+            "TN": 86,
+            "FN": 19
+        }
+    },
+    "test_end_to_end_at_val_threshold": {
+        "confidence_threshold": 0.5,
+        "image_accuracy": 87.04,
+        "image_precision": 79.71,
+        "image_recall": 100.0,
+        "image_specificity": 73.58,
+        "image_f1_score": 88.71,
+        "fppi_on_clean_roads": 0.642,
+        "avg_detections_per_pothole_photo": 7.35,
+        "confusion_matrix": {
+            "TP_images": 55,
+            "FP_images": 14,
+            "TN_images": 39,
+            "FN_images": 0
+        }
+    },
+    "test_end_to_end_at_default_0_5": {
+        "confidence_threshold": 0.5,
+        "image_accuracy": 87.04,
+        "image_precision": 79.71,
+        "image_recall": 100.0,
+        "image_specificity": 73.58,
+        "image_f1_score": 88.71,
+        "fppi_on_clean_roads": 0.642,
+        "avg_detections_per_pothole_photo": 7.35,
+        "confusion_matrix": {
+            "TP_images": 55,
+            "FP_images": 14,
+            "TN_images": 39,
+            "FN_images": 0
+        }
+    },
+    "evaluation_notes": {
+        "sample_correlation": "Test crops originate from unseen source photos. Because patches from the same photo share lighting and asphalt conditions, treat patch metrics as subject to roughly +-5 percentage points variance.",
+        "end_to_end_screening_vs_detection": "Image-level detection measures whether ANY candidate box in a full frame passes threshold. It serves as a coarse frame screening metric. It does NOT represent bounding box mAP@0.5, which strictly requires hand-annotated bounding box coordinates."
+    }
 }

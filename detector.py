@@ -45,10 +45,13 @@ def extract_stage1_candidates(
     """
     h, w = frame.shape[:2]
     # Restrict to road surface: bottom 50% for dashcam videos,
-    # or exclude top 15% (sky/horizon/trees) for still photos if height allows.
+    # or exclude top 15% (sky/trees/cars) and bottom 5% (watermarks/timestamps) for still photos.
     roi_top = int(h * 0.50) if use_roi else (int(h * 0.15) if h > 200 else 0)
-    roi = frame[roi_top:, :]
+    roi_bot = int(h * 0.95) if not use_roi and h > 200 else h
+    roi = frame[roi_top:roi_bot, :]
     roi_h, roi_w = roi.shape[:2]
+    if roi_h < 30 or roi_w < 30:
+        return []
 
     # Convert to LAB for luminance extraction
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
@@ -72,7 +75,7 @@ def extract_stage1_candidates(
     candidates = []
 
     # Dynamic area filters relative to frame resolution
-    min_area = max(250, int(0.0006 * h * w))
+    min_area = max(300, int(0.0008 * h * w))
     max_area = int(0.18 * h * w)
 
     for cnt in contours:
@@ -81,13 +84,13 @@ def extract_stage1_candidates(
             bx, by, bw, bh = cv2.boundingRect(cnt)
             aspect = bw / float(bh) if bh > 0 else 0
             if 0.35 < aspect < 3.5:
-                # Avoid touching the top border of full photos (sky/cars)
-                if not use_roi and by <= 2:
+                # Exclude boxes clipped against frame borders (cars, watermarks, shoes at edge)
+                if bx <= 4 or by <= 4 or (bx + bw) >= roi_w - 4 or (by + bh) >= roi_h - 4:
                     continue
 
                 # Local depression contrast: compare candidate interior with surrounding road margin
-                pad_x = max(4, int(bw * 0.25))
-                pad_y = max(4, int(bh * 0.25))
+                pad_x = max(6, int(bw * 0.30))
+                pad_y = max(6, int(bh * 0.30))
                 ox1 = max(0, bx - pad_x)
                 oy1 = max(0, by - pad_y)
                 ox2 = min(roi_w, bx + bw + pad_x)
@@ -101,23 +104,27 @@ def extract_stage1_candidates(
                 outer_cnt = outer.size
 
                 margin_cnt = outer_cnt - inner_cnt
-                if margin_cnt > 0:
-                    margin_mean = (outer_sum - inner_sum) / margin_cnt
-                    inner_mean = inner_sum / max(inner_cnt, 1)
-                    contrast = margin_mean - inner_mean
-                else:
-                    contrast = 0.0
+                if margin_cnt < 16:
+                    continue
 
-                # Reject regions that are significantly brighter than surrounding pavement
-                # (e.g. white road stripes, reflector studs, bright highlights)
-                if contrast < -2.5:
+                margin_mean = (outer_sum - inner_sum) / margin_cnt
+                inner_mean = inner_sum / max(inner_cnt, 1)
+                contrast = margin_mean - inner_mean
+
+                # Pothole must be a physical depression (darker than surrounding road)
+                if contrast < 0.0:
                     continue
 
                 inner_std = float(np.std(inner))
+                margin_std = float(np.std(outer))
+                # Reject patches where margin is completely uniform (graphics, banners, sky)
+                if margin_std < 5.0 or inner_std < 6.0:
+                    continue
+
                 orig_y = by + roi_top
 
                 # Saliency score: depression contrast + scale + interior texture
-                score = (contrast + 3.0) * np.sqrt(area) * (1.0 + min(inner_std, 40.0) / 40.0)
+                score = (contrast + 5.0) * np.sqrt(area) * (1.0 + min(inner_std, 40.0) / 40.0)
                 candidates.append((bx, orig_y, bx + bw, orig_y + bh, score))
 
     candidates.sort(key=lambda b: b[4], reverse=True)

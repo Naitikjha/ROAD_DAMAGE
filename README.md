@@ -9,12 +9,12 @@ A deep learning course project for detecting, classifying, and assessing the sev
 The system uses an interpretable **two-stage detection pipeline**: classical computer vision extracts candidate region proposals, and a custom CNN classifies each proposal.
 
 ### Stage 1: Classical Region Proposals
-- **Road Surface Perspective Prior**: Restricts candidate search to the road surface (lower 50% for dashcam videos, or bottom road region excluding horizon for still photos).
+- **Road Surface Perspective Prior**: Restricts candidate search to the road surface (lower 50% for dashcam videos, or bottom road region excluding horizon and bottom watermark borders for still photos).
 - **Edge-Preserving Smoothing**: Bilateral filtering (`d=9, σ_color=75, σ_space=75`) smooths gravel and asphalt texture while preserving crater borders.
 - **Adaptive Depression Thresholding**: Mean-C adaptive thresholding (`block_size=31, C=10`) isolates dark candidate depressions.
 - **Morphological Filtering**: Elliptical opening (5×5) and closing (7×7) eliminate grain noise and bridge fragmented crater edges.
-- **Local Depression Contrast Verification**: Compares interior crater luminance against the surrounding road pavement margin ($L_{surrounding} - L_{interior}$). Discards regions brighter than the pavement (white lane markings, reflector studs, headlights).
-- **Saliency Ranking**: Candidates are ranked by depression contrast, scale-relative area ($0.0006 \le A / A_{frame} \le 0.18$), and interior roughness.
+- **Local Depression Contrast & Border Filtering**: Compares interior crater luminance against the surrounding road pavement margin ($L_{surrounding} - L_{interior}$). Discards regions clipped against frame boundaries (cars, watermarks, shoes) or brighter than pavement.
+- **Saliency Ranking**: Candidates are ranked by depression contrast, scale-relative area ($0.0008 \le A / A_{frame} \le 0.18$), and interior roughness.
 
 ### Stage 2: ResPotholeNet CNN Classifier & Tracker
 - Each candidate patch is extracted with a 10% context margin, resized to **128 × 128**, and normalized.
@@ -46,12 +46,13 @@ The system uses an interpretable **two-stage detection pipeline**: classical com
 | Attribute | Specification |
 |---|---|
 | **Raw Data** | 712 photos (364 pothole + 348 normal) from [anantSinghCross/pothole-detection-system](https://github.com/anantSinghCross/pothole-detection-system-using-convolution-neural-networks) |
-| **Deduplication** | **SHA-256 byte hash** removed 6 byte-identical duplicates → **706 unique photos** (362 pothole + 344 normal). Perceptual difference hashing (dHash) flags 3 near-duplicate pairs within potholes. |
-| **Source-Level Split** | **70% Train / 15% Val / 15% Test** performed on source image files *before* crop extraction (**Zero Data Leakage**). Crops from the same photo never appear in multiple partitions. |
-| **Split Counts (Photos)** | **Train:** 494 photos (253 pos, 241 neg) <br> **Val:** 104 photos (54 pos, 50 neg) <br> **Test:** 108 photos (55 pos, 53 neg) |
-| **Patch Counts (128×128)** | **Train:** 1,222 crops <br> **Val:** 258 crops <br> **Test:** 266 crops (109 positive, 157 negative) from the 108 test photos |
+| **Deduplication** | **SHA-256 byte hash** removed 6 byte-identical duplicates. **Perceptual dHash** (Hamming distance $\le 2$) removed 1 near-duplicate pair $\rightarrow$ **705 clean unique source photos** (361 pothole + 344 normal). |
+| **Deterministic Split** | File paths are `sorted()` before splitting to guarantee 100% cross-platform reproducibility. Split is **70% Train / 15% Val / 15% Test** on source photos (**Zero Data Leakage**). |
+| **Split Counts (Photos)** | **Train:** 492 photos (252 pos, 240 neg) <br> **Val:** 105 photos (54 pos, 51 neg) <br> **Test:** 108 photos (55 pos, 53 neg) |
+| **Patch Counts (128×128)** | **Train:** 915 crops <br> **Val:** 196 crops <br> **Test:** 199 crops (106 positive, 93 negative) from the 108 test photos |
+| **Symmetric Sampling** | Both positive and negative classes are sampled with the **exact same rule** (top 2 Stage-1 candidate proposals per photo) to eliminate size and rank shortcuts. |
 | **Loss & Optimizer** | Focal Loss ($\alpha=0.25, \gamma=2.0$), AdamW (weight decay $10^{-4}$), CosineAnnealingLR |
-| **Augmentation** | Horizontal flip, brightness/contrast jitter, slight rotation ($\pm 15^\circ$). No vertical flip (preserves road perspective). |
+| **Augmentation** | Horizontal flip, brightness/contrast jitter, slight rotation ($\pm 15^\circ$). No vertical flip (preserves ground perspective). |
 
 ---
 
@@ -59,53 +60,61 @@ The system uses an interpretable **two-stage detection pipeline**: classical com
 
 We report evaluation at two distinct levels: **patch classification** on candidate proposals and **end-to-end pipeline detection** on full source images.
 
-### 1. Patch-Level Classification (Unseen Test Crops, n = 266 crops from 108 photos)
+### 1. Patch-Level Classification (Unseen Test Crops, n = 199 crops from 108 photos)
 
 Measures the CNN's ability to classify candidate 128×128 patches proposed by Stage 1:
 
 | Metric | Value |
 |---|---|
-| **Accuracy** | **87.59%** |
-| **Precision** | **85.19%** |
-| **Recall** | **84.40%** |
-| **F1-Score** | **84.79%** |
-| **Focal Loss** | **0.0549** |
+| **Accuracy** | **86.93%** |
+| **Precision** | **92.55%** |
+| **Recall** | **82.08%** |
+| **F1-Score** | **87.00%** |
+| **Focal Loss** | **0.0364** |
 
 ```
-Confusion Matrix (n = 266 crops):
+Patch Confusion Matrix (n = 199 crops):
                 Predicted Pos   Predicted Neg
-  Actual Pos          92              17
-  Actual Neg          16             141
+  Actual Pos          87              19
+  Actual Neg           7              86
 ```
 
-> **Statistical Variance Note (±5% Margin):** Test crops come from 108 unique source photos. Because patches from the same photo share identical camera optics, lighting, and asphalt aggregate, test samples are correlated rather than strictly independent. Expect a standard confidence margin of approximately **±5 percentage points**, which naturally explains the difference between validation (76.9%) and test (84.8%).
+> **Statistical Variance Note (±5% Margin):** Test crops originate from 108 unique source photos. Because patches from the same photo share identical camera optics, lighting, and asphalt aggregate, test samples are correlated rather than strictly independent. Expect an estimated standard confidence margin of approximately **±5 percentage points**, accounting for variations between validation (85.4%) and test (87.0%).
 
 ---
 
-### 2. End-to-End Pipeline Detection (Full Held-Out Photos, n = 108 photos)
+### 2. End-to-End Pipeline Evaluation (Full Held-Out Photos, n = 108 photos)
 
-Measures the complete two-stage system operating on full held-out test photos (Stage 1 proposals → Stage 2 ResPotholeNet → NMS):
+Measures the complete two-stage system operating on full held-out test photos (Stage 1 proposals → Stage 2 ResPotholeNet → NMS).
 
-- **Pothole Detection Rate (Recall):** Percentage of pothole-containing photos correctly flagged ($\ge 1$ pothole detected).
-- **Clean Road Specificity:** Percentage of clean road photos correctly identified with 0 false detections.
-- **FPPI (False Positives Per Image):** Average number of false alarm boxes generated per clean road photo.
+#### Threshold Selection Methodology
+To avoid test-set tuning bias, the optimal operating threshold is **selected strictly on the VALIDATION partition** by sweeping candidate thresholds $\in [0.3, 0.8]$ to maximize Validation F1 score:
+- **Optimal Validation Threshold:** **0.50** (Validation F1 = 82.81%, Recall = 98.15%, Specificity = 58.82%).
+- The held-out **test set is evaluated ONCE** at this validation-selected threshold (0.50).
 
-| Conf Threshold | Image Accuracy | Image Precision | Image Recall (Sensitivity) | Image Specificity | Image F1-Score | FPPI (Clean Roads) | Avg Detections / Pothole Photo |
-|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **0.3** | 63.89% | 58.51% | **100.0%** | 26.42% | 73.83% | 3.66 | 17.55 |
-| **0.4** | 73.15% | 65.48% | **100.0%** | 45.28% | 79.14% | 2.02 | 14.73 |
-| **0.5 (Default)** | **80.56%** | **72.37%** | **100.0%** | **60.38%** | **83.97%** | **0.98** | **11.78** |
-| **0.6** | **88.89%** | **82.09%** | **100.0%** | **77.36%** | **90.16%** | **0.51** | **9.15** |
-| **0.7** | **90.74%** | **88.14%** | **94.55%** | **86.79%** | **91.23%** | **0.24** | **6.84** |
+#### Test Set Performance at Validation-Selected Threshold (0.50)
+
+| Metric | Test Set Value | Description |
+|---|---|---|
+| **Image-Level Accuracy** | **87.04%** | Percentage of all test photos correctly categorized |
+| **Image-Level Precision** | **79.71%** | Precision among photos flagged as containing potholes |
+| **Image-Level Recall** | **100.0%** | 55 of 55 pothole photos have $\ge 1$ detection |
+| **Image Specificity** | **73.58%** | 39 of 53 clean road photos correctly have 0 detections |
+| **Image-Level F1-Score** | **88.71%** | Harmonic mean of image precision and recall |
+| **Clean Road FPPI** | **0.642** | Average false positive boxes per clean road photo |
+| **Avg Pothole Detections**| **7.35** | Average bounding boxes per pothole-containing photo |
 
 ```
-End-to-End Confusion Matrix at Conf = 0.50 (n = 108 full photos):
+Image-Level Confusion Matrix at Threshold 0.50 (n = 108 full photos):
                   Predicted Pothole   Predicted Clear Road
   Actual Pothole          55                    0
-  Actual Clear            21                   32
+  Actual Clear            14                   39
 ```
 
-At threshold 0.50, the pipeline detects 100% of pothole scenes with under 1 false positive box per clean photo (0.98 FPPI). Raising threshold to 0.70 cuts FPPI down to 0.24 while retaining 94.55% pothole recall.
+#### ⚠️ Critical Discussion & Limitations of Image-Level Metrics
+- **Surrogate Nature of Image-Level Recall:** A photo counts as "detected" if *any* candidate box passes the threshold. Because pothole photos generate an average of 7.35 passing boxes, 100% image-level recall is an expected artifact of multi-box proposals and **does not prove that the bounding box tightly bounds the pothole**.
+- **False Alarms on Clean Roads:** At threshold 0.50, 14 of 53 clean road photos (26.4%) trigger at least one false alarm box (0.642 FPPI), caused by severe cracks, dark asphalt patches, or shadow seams.
+- **True Object Detection vs. Image Screening:** Real object detection accuracy (e.g., mAP@0.5) requires hand-annotated ground-truth bounding box coordinates with IoU $\ge 0.5$. Because the underlying dataset provides only image-level labels without coordinate annotations, this end-to-end evaluation measures **coarse frame screening performance**, not tight bounding box localization.
 
 ---
 
@@ -127,7 +136,7 @@ data/
 ```
 
 ### 3. Run End-to-End Evaluation
-To evaluate the complete two-stage pipeline on the held-out test images without retraining:
+To evaluate the complete two-stage pipeline on the held-out test images:
 ```bash
 python evaluate_pipeline.py --weights pothole_cnn.pth --data_dir data
 ```
@@ -137,11 +146,11 @@ python evaluate_pipeline.py --weights pothole_cnn.pth --data_dir data
 python train.py --data_dir data --epochs 15 --batch_size 32
 ```
 This pipeline:
-1. Deduplicates photos via SHA-256 byte hashing (and reports perceptual dHash near-dupes).
-2. Partitions source photos 70/15/15 with zero data leakage.
-3. Mines domain-aligned, multi-scale proposals using road perspective priors and depression contrast.
+1. Deduplicates photos via SHA-256 byte hashing and dHash perceptual deduplication.
+2. Sorts file paths and partitions source photos 70/15/15 with zero data leakage.
+3. Samples symmetric Stage-1 proposals across both classes (top 2 proposals per photo).
 4. Trains ResPotholeNet from scratch with Focal Loss and Cosine Annealing.
-5. Runs both patch-level evaluation and end-to-end pipeline evaluation on unseen test images.
+5. Selects the optimal threshold on the validation set, then evaluates on unseen test photos.
 6. Saves weights to `pothole_cnn.pth` and reports to `model_metrics.json`.
 
 ### 5. Run the Streamlit Application
@@ -164,30 +173,22 @@ Features:
 ├── .streamlit/
 │   └── config.toml          # Streamlit configuration
 ├── data/
-│   ├── potholes/            # Real pothole road images (362 unique)
-│   └── normal/              # Clear road pavement images (344 unique)
+│   ├── potholes/            # Real pothole road images (361 clean)
+│   └── normal/              # Clear road pavement images (344 clean)
 ├── models/
 │   └── pothole_net.py       # Custom ResPotholeNet CNN architecture
 ├── app.py                   # Streamlit web application with tracking
 ├── detector.py              # Two-stage detection engine & PotholeTracker
-├── train.py                 # Multi-scale training & unified evaluation
+├── train.py                 # Symmetric training & validation tuning pipeline
 ├── evaluate_pipeline.py     # Standalone end-to-end evaluation tool
-├── pothole_cnn.pth          # Trained model weights
-├── model_metrics.json       # Patch & end-to-end evaluation report
-├── end_to_end_metrics.json  # Full threshold sweep report
+├── pothole_cnn.pth          # Retrained model weights
+├── model_metrics.json       # Complete patch & validation-tuned metrics
+├── end_to_end_metrics.json  # Full validation sweep & test metrics
 ├── positives_sheet.png      # Contact sheet of extracted Stage-1 proposals
 ├── requirements.txt         # Python dependencies
 ├── sample_pothole_video.mp4 # Sample test video
 └── README.md
 ```
-
----
-
-## ⚠️ Known Limitations & Discussion
-
-- **Dataset Framing**: The dataset consists of still photos of roads from diverse cameras rather than continuous driving video logs. While Stage 1 enforces road perspective priors, varying camera tilt can shift the horizon.
-- **Sample Correlation**: Test crops derive from 108 source images, introducing approximately ±5% variance due to intra-image correlation.
-- **Hardware Agnostic**: Pipeline runs efficiently on both CPU and CUDA-enabled GPUs.
 
 ---
 
