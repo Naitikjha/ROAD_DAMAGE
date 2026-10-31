@@ -81,10 +81,10 @@ def main():
 
     model = ResPotholeNet(in_channels=3).to(device)
     checkpoint = torch.load(args.weights, map_location=device)
-    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
-    else:
-        model.load_state_dict(checkpoint)
+    raw_state = checkpoint["model_state_dict"] if (isinstance(checkpoint, dict) and "model_state_dict" in checkpoint) else checkpoint
+    model_keys = set(model.state_dict().keys())
+    clean_state = {k: v for k, v in raw_state.items() if k in model_keys}
+    model.load_state_dict(clean_state, strict=False)
     model.eval()
 
     print("\nSelecting optimal operating threshold on VALIDATION images...")

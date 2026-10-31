@@ -601,7 +601,11 @@ def train_pipeline(
     print(f"\nTraining Complete! Best model saved to: {save_path}")
 
     # Reload best weights
-    model.load_state_dict(torch.load(save_path, map_location=device))
+    ck = torch.load(save_path, map_location=device)
+    raw_state = ck["model_state_dict"] if (isinstance(ck, dict) and "model_state_dict" in ck) else ck
+    model_keys = set(model.state_dict().keys())
+    clean_state = {k: v for k, v in raw_state.items() if k in model_keys}
+    model.load_state_dict(clean_state, strict=False)
 
     print("\n" + "=" * 65)
     print("     THRESHOLD SELECTION ON VALIDATION SOURCE IMAGES")

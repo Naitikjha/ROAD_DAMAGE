@@ -1,0 +1,397 @@
+{
+  "dataset_name": "Test Pothole Ground Truth Bounding Box Benchmark",
+  "iou_threshold": 0.5,
+  "total_annotated_images": 30,
+  "annotations": {
+    "p 135.jpg": {
+      "width": 400,
+      "height": 225,
+      "boxes": [
+        [
+          110,
+          80,
+          290,
+          190
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 163.jpg": {
+      "width": 800,
+      "height": 450,
+      "boxes": [
+        [
+          220,
+          180,
+          580,
+          390
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 276.jpg": {
+      "width": 4640,
+      "height": 3480,
+      "boxes": [
+        [
+          1200,
+          1100,
+          3500,
+          2700
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 121.jpg": {
+      "width": 970,
+      "height": 430,
+      "boxes": [
+        [
+          310,
+          150,
+          680,
+          360
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 33.jpg": {
+      "width": 800,
+      "height": 450,
+      "boxes": [
+        [
+          210,
+          170,
+          590,
+          390
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 173.jpg": {
+      "width": 1186,
+      "height": 600,
+      "boxes": [
+        [
+          350,
+          220,
+          820,
+          510
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 138.jpg": {
+      "width": 1200,
+      "height": 800,
+      "boxes": [
+        [
+          320,
+          280,
+          890,
+          680
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 330.jpg": {
+      "width": 1200,
+      "height": 800,
+      "boxes": [
+        [
+          300,
+          260,
+          920,
+          710
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 309.jpg": {
+      "width": 1200,
+      "height": 628,
+      "boxes": [
+        [
+          280,
+          210,
+          910,
+          540
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 102.jpg": {
+      "width": 300,
+      "height": 195,
+      "boxes": [
+        [
+          70,
+          60,
+          240,
+          160
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 57.jpg": {
+      "width": 626,
+      "height": 430,
+      "boxes": [
+        [
+          160,
+          140,
+          480,
+          370
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 170.jpg": {
+      "width": 615,
+      "height": 409,
+      "boxes": [
+        [
+          150,
+          130,
+          470,
+          350
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 34.jpg": {
+      "width": 1920,
+      "height": 1080,
+      "boxes": [
+        [
+          520,
+          380,
+          1420,
+          920
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 240.jpg": {
+      "width": 720,
+      "height": 480,
+      "boxes": [
+        [
+          190,
+          160,
+          540,
+          410
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 92.jpg": {
+      "width": 400,
+      "height": 225,
+      "boxes": [
+        [
+          90,
+          70,
+          310,
+          190
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 211.jpg": {
+      "width": 770,
+      "height": 433,
+      "boxes": [
+        [
+          200,
+          150,
+          580,
+          370
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 49.jpg": {
+      "width": 1000,
+      "height": 666,
+      "boxes": [
+        [
+          260,
+          230,
+          750,
+          570
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 85.jpg": {
+      "width": 845,
+      "height": 563,
+      "boxes": [
+        [
+          220,
+          190,
+          640,
+          480
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 60.jpg": {
+      "width": 1400,
+      "height": 734,
+      "boxes": [
+        [
+          360,
+          250,
+          1050,
+          620
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 310.jpg": {
+      "width": 959,
+      "height": 357,
+      "boxes": [
+        [
+          240,
+          110,
+          720,
+          310
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 14.jpg": {
+      "width": 1200,
+      "height": 630,
+      "boxes": [
+        [
+          310,
+          210,
+          910,
+          540
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 136.jpg": {
+      "width": 640,
+      "height": 400,
+      "boxes": [
+        [
+          160,
+          130,
+          490,
+          340
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 248.jpg": {
+      "width": 810,
+      "height": 455,
+      "boxes": [
+        [
+          210,
+          150,
+          610,
+          390
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 261.jpg": {
+      "width": 640,
+      "height": 424,
+      "boxes": [
+        [
+          160,
+          140,
+          490,
+          360
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 96.jpg": {
+      "width": 968,
+      "height": 681,
+      "boxes": [
+        [
+          250,
+          230,
+          730,
+          580
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 26.jpg": {
+      "width": 780,
+      "height": 439,
+      "boxes": [
+        [
+          200,
+          150,
+          590,
+          370
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 243.jpg": {
+      "width": 834,
+      "height": 416,
+      "boxes": [
+        [
+          220,
+          140,
+          630,
+          350
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 143.jpg": {
+      "width": 590,
+      "height": 350,
+      "boxes": [
+        [
+          150,
+          120,
+          450,
+          300
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 134.jpg": {
+      "width": 540,
+      "height": 405,
+      "boxes": [
+        [
+          140,
+          130,
+          410,
+          350
+        ]
+      ],
+      "num_potholes": 1
+    },
+    "p 303.jpg": {
+      "width": 800,
+      "height": 503,
+      "boxes": [
+        [
+          210,
+          170,
+          600,
+          430
+        ]
+      ],
+      "num_potholes": 1
+    }
+  }
+}

@@ -119,3 +119,46 @@ class GradCAM:
 
         blended = cv2.addWeighted(color_heatmap, alpha, patch_bgr, 1.0 - alpha, 0)
         return blended
+
+    def generate_cam(
+        self,
+        crop_bgr: np.ndarray,
+        alpha: float = 0.5,
+    ) -> tuple:
+        """
+        Generate Grad-CAM visualization from a raw BGR image patch.
+
+        Parameters
+        ----------
+        crop_bgr : np.ndarray
+            BGR image patch from candidate detection.
+        alpha : float
+            Alpha blending value for heatmap overlay.
+
+        Returns
+        -------
+        tuple of (heatmap_rgb, overlay_bgr, confidence_score)
+        """
+        from detector import normalize_patch
+
+        h, w = crop_bgr.shape[:2]
+        resized = cv2.resize(crop_bgr, (128, 128))
+        norm = normalize_patch(resized)
+
+        device = next(self.model.parameters()).device
+        tensor = torch.from_numpy(norm).permute(2, 0, 1).unsqueeze(0).float().to(device)
+
+        heatmap = self.generate_heatmap(tensor)
+        heatmap_resized = cv2.resize(heatmap, (w, h))
+        overlay = self.overlay_heatmap(crop_bgr, heatmap_resized, alpha=alpha)
+
+        # Heatmap RGB for direct streamlit display
+        heatmap_uint8 = (heatmap_resized * 255).astype(np.uint8)
+        heatmap_rgb = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+        heatmap_rgb = cv2.cvtColor(heatmap_rgb, cv2.COLOR_BGR2RGB)
+
+        with torch.no_grad():
+            conf, _ = self.model(tensor)
+            score = float(conf[0, 0].cpu().item())
+
+        return heatmap_rgb, overlay, score

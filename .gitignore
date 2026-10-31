@@ -17,7 +17,8 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Dataset (download separately — see README)
-data/
+# Dataset images (download separately — see README)
+data/*
+!data/*.json
 temp_repo/
 test_pothole.jpg

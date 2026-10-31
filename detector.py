@@ -481,10 +481,10 @@ class PotholeDetector:
 
         if weights_path and Path(weights_path).exists():
             checkpoint = torch.load(weights_path, map_location=self.device, weights_only=True)
-            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-                self.model.load_state_dict(checkpoint["model_state_dict"])
-            else:
-                self.model.load_state_dict(checkpoint)
+            raw_state = checkpoint["model_state_dict"] if (isinstance(checkpoint, dict) and "model_state_dict" in checkpoint) else checkpoint
+            model_keys = set(self.model.state_dict().keys())
+            clean_state = {k: v for k, v in raw_state.items() if k in model_keys}
+            self.model.load_state_dict(clean_state, strict=False)
             print(f"Loaded trained ResPotholeNet weights from {weights_path}")
         else:
             raise FileNotFoundError(
