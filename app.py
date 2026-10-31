@@ -606,10 +606,10 @@ def render_hero():
     st.markdown(
         """
         <div class="hero">
-            <div class="badge">Course Project &middot; Custom CNN &middot; No Pretrained Models</div>
-            <h1>Pothole Detection</h1>
-            <p>Upload a road video or image &mdash; your custom CNN will locate potholes
-               and overlay bounding boxes coloured by severity.</p>
+            <div class="badge">Two-Stage Screening &middot; Custom ResPotholeNet &middot; No Pretrained Weights</div>
+            <h1>Pothole Screening & Proposal Classification</h1>
+            <p>Upload a road video or image &mdash; classical CV extracts candidate region proposals,
+               and ResPotholeNet classifies each patch with Kalman multi-object tracking (SORT).</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1106,7 +1106,7 @@ def render_image_tab(conf: float):
 
 def main():
     st.set_page_config(
-        page_title="Pothole Detector | Custom CNN",
+        page_title="Pothole Screening & Classification | Custom CNN",
         page_icon="🕳️",
         layout="wide",
         initial_sidebar_state="expanded",

@@ -602,10 +602,8 @@ def train_pipeline(
 
     # Reload best weights
     ck = torch.load(save_path, map_location=device)
-    raw_state = ck["model_state_dict"] if (isinstance(ck, dict) and "model_state_dict" in ck) else ck
-    model_keys = set(model.state_dict().keys())
-    clean_state = {k: v for k, v in raw_state.items() if k in model_keys}
-    model.load_state_dict(clean_state, strict=False)
+    state_dict = ck["model_state_dict"] if (isinstance(ck, dict) and "model_state_dict" in ck) else ck
+    model.load_state_dict(state_dict, strict=True)
 
     print("\n" + "=" * 65)
     print("     THRESHOLD SELECTION ON VALIDATION SOURCE IMAGES")
@@ -708,9 +706,10 @@ def train_pipeline(
             "label_noise_warning": (
                 "Positive training crops are the top-2 Stage-1 proposals from pothole photos. "
                 "Stage-1 selects the most salient dark region, which is NOT always the pothole — "
-                "shadows, cracks, and pavement patches also pass the filter. Expect roughly "
-                "10-20% label noise in positive crops (visible in positives_sheet.png). "
-                "This is an architectural limitation of weak Stage-1 supervision."
+                "shadows, cracks, road repairs, and pavement patches also pass the filter. "
+                "Visual count of positives_sheet.png shows only ~10 of 24 crops (~42%) are true potholes, "
+                "indicating approximately 58% label noise in positive proxy crops. "
+                "This is an inherent limitation of weak Stage-1 classical supervision."
             ),
             "stage1_recall_ceiling": (
                 "The CNN only evaluates what Stage-1 nominates. Potholes missed by the "

@@ -1,0 +1,320 @@
+{
+  "evaluation_name": "Stage-1 Classical Region Proposal Recall Benchmark",
+  "gt_annotations_file": "data/test_ground_truth_boxes.json",
+  "total_annotated_photos": 30,
+  "total_ground_truth_boxes": 30,
+  "mean_max_iou_percent": 11.14,
+  "median_max_iou_percent": 6.13,
+  "avg_proposals_per_pothole_image": 9.63,
+  "avg_proposals_per_clean_image": 1.63,
+  "candidate_recall_ceiling_by_iou": {
+    "iou_10": {
+      "threshold": 0.1,
+      "matched_gt_boxes": 11,
+      "total_gt_boxes": 30,
+      "recall_percent": 36.67
+    },
+    "iou_20": {
+      "threshold": 0.2,
+      "matched_gt_boxes": 3,
+      "total_gt_boxes": 30,
+      "recall_percent": 10.0
+    },
+    "iou_25": {
+      "threshold": 0.25,
+      "matched_gt_boxes": 3,
+      "total_gt_boxes": 30,
+      "recall_percent": 10.0
+    },
+    "iou_30": {
+      "threshold": 0.3,
+      "matched_gt_boxes": 2,
+      "total_gt_boxes": 30,
+      "recall_percent": 6.67
+    },
+    "iou_35": {
+      "threshold": 0.35,
+      "matched_gt_boxes": 2,
+      "total_gt_boxes": 30,
+      "recall_percent": 6.67
+    },
+    "iou_50": {
+      "threshold": 0.5,
+      "matched_gt_boxes": 2,
+      "total_gt_boxes": 30,
+      "recall_percent": 6.67
+    }
+  },
+  "per_image_results": {
+    "p 135.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 2,
+      "max_ious_achieved": [
+        0.0249
+      ],
+      "mean_max_iou": 0.0249,
+      "matched_at_0_50": 0
+    },
+    "p 163.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 8,
+      "max_ious_achieved": [
+        0.0213
+      ],
+      "mean_max_iou": 0.0213,
+      "matched_at_0_50": 0
+    },
+    "p 276.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 1,
+      "max_ious_achieved": [
+        0.0382
+      ],
+      "mean_max_iou": 0.0382,
+      "matched_at_0_50": 0
+    },
+    "p 121.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 5,
+      "max_ious_achieved": [
+        0.0429
+      ],
+      "mean_max_iou": 0.0429,
+      "matched_at_0_50": 0
+    },
+    "p 33.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 6,
+      "max_ious_achieved": [
+        0.1426
+      ],
+      "mean_max_iou": 0.1426,
+      "matched_at_0_50": 0
+    },
+    "p 173.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 8,
+      "max_ious_achieved": [
+        0.2908
+      ],
+      "mean_max_iou": 0.2908,
+      "matched_at_0_50": 0
+    },
+    "p 138.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 6,
+      "max_ious_achieved": [
+        0.1507
+      ],
+      "mean_max_iou": 0.1507,
+      "matched_at_0_50": 0
+    },
+    "p 330.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 8,
+      "max_ious_achieved": [
+        0.0521
+      ],
+      "mean_max_iou": 0.0521,
+      "matched_at_0_50": 0
+    },
+    "p 309.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 14,
+      "max_ious_achieved": [
+        0.0664
+      ],
+      "mean_max_iou": 0.0664,
+      "matched_at_0_50": 0
+    },
+    "p 102.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 1,
+      "max_ious_achieved": [
+        0.5662
+      ],
+      "mean_max_iou": 0.5662,
+      "matched_at_0_50": 1
+    },
+    "p 57.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 12,
+      "max_ious_achieved": [
+        0.0351
+      ],
+      "mean_max_iou": 0.0351,
+      "matched_at_0_50": 0
+    },
+    "p 170.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 12,
+      "max_ious_achieved": [
+        0.1984
+      ],
+      "mean_max_iou": 0.1984,
+      "matched_at_0_50": 0
+    },
+    "p 34.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 18,
+      "max_ious_achieved": [
+        0.0562
+      ],
+      "mean_max_iou": 0.0562,
+      "matched_at_0_50": 0
+    },
+    "p 240.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 18,
+      "max_ious_achieved": [
+        0.0268
+      ],
+      "mean_max_iou": 0.0268,
+      "matched_at_0_50": 0
+    },
+    "p 92.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 1,
+      "max_ious_achieved": [
+        0.0
+      ],
+      "mean_max_iou": 0.0,
+      "matched_at_0_50": 0
+    },
+    "p 211.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 5,
+      "max_ious_achieved": [
+        0.0308
+      ],
+      "mean_max_iou": 0.0308,
+      "matched_at_0_50": 0
+    },
+    "p 49.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 12,
+      "max_ious_achieved": [
+        0.5558
+      ],
+      "mean_max_iou": 0.5558,
+      "matched_at_0_50": 1
+    },
+    "p 85.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 5,
+      "max_ious_achieved": [
+        0.0418
+      ],
+      "mean_max_iou": 0.0418,
+      "matched_at_0_50": 0
+    },
+    "p 60.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 3,
+      "max_ious_achieved": [
+        0.0362
+      ],
+      "mean_max_iou": 0.0362,
+      "matched_at_0_50": 0
+    },
+    "p 310.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 13,
+      "max_ious_achieved": [
+        0.0321
+      ],
+      "mean_max_iou": 0.0321,
+      "matched_at_0_50": 0
+    },
+    "p 14.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 10,
+      "max_ious_achieved": [
+        0.1108
+      ],
+      "mean_max_iou": 0.1108,
+      "matched_at_0_50": 0
+    },
+    "p 136.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 12,
+      "max_ious_achieved": [
+        0.0929
+      ],
+      "mean_max_iou": 0.0929,
+      "matched_at_0_50": 0
+    },
+    "p 248.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 16,
+      "max_ious_achieved": [
+        0.1172
+      ],
+      "mean_max_iou": 0.1172,
+      "matched_at_0_50": 0
+    },
+    "p 261.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 13,
+      "max_ious_achieved": [
+        0.0697
+      ],
+      "mean_max_iou": 0.0697,
+      "matched_at_0_50": 0
+    },
+    "p 96.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 21,
+      "max_ious_achieved": [
+        0.124
+      ],
+      "mean_max_iou": 0.124,
+      "matched_at_0_50": 0
+    },
+    "p 26.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 11,
+      "max_ious_achieved": [
+        0.1212
+      ],
+      "mean_max_iou": 0.1212,
+      "matched_at_0_50": 0
+    },
+    "p 243.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 27,
+      "max_ious_achieved": [
+        0.1424
+      ],
+      "mean_max_iou": 0.1424,
+      "matched_at_0_50": 0
+    },
+    "p 143.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 9,
+      "max_ious_achieved": [
+        0.0521
+      ],
+      "mean_max_iou": 0.0521,
+      "matched_at_0_50": 0
+    },
+    "p 134.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 2,
+      "max_ious_achieved": [
+        0.0157
+      ],
+      "mean_max_iou": 0.0157,
+      "matched_at_0_50": 0
+    },
+    "p 303.jpg": {
+      "gt_boxes_count": 1,
+      "stage1_proposals_count": 10,
+      "max_ious_achieved": [
+        0.0879
+      ],
+      "mean_max_iou": 0.0879,
+      "matched_at_0_50": 0
+    }
+  }
+}

@@ -1,5 +1,6 @@
-# Core ML (pure PyTorch from scratch - no torchvision)
+# Core ML (PyTorch without pretrained weights in primary model)
 torch>=2.0.0
+torchvision>=0.15.0  # Required for baseline.py (Unit II transfer learning comparison)
 
 # Computer Vision
 opencv-python>=4.8.0

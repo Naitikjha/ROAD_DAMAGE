@@ -1,12 +1,13 @@
-# 🕳️ Pothole Detection from Road Videos Using a Custom CNN
+# 🕳️ Two-Stage Road Pothole Screening & Proposal Classification Pipeline Using a Custom CNN
 
-A deep learning course project for detecting, classifying, and tracking potholes in road videos and images. Built **100% from scratch using pure PyTorch** (`torch.nn`) — without YOLO, Ultralytics, torchvision backbones, or pretrained weights in the primary architecture.
+A deep learning course project for coarse frame screening, candidate proposal classification, and multi-object tracking of road surface potholes in dashcam videos and photos. Built using **PyTorch with no pretrained weights in the primary architecture**, combining classical computer vision region proposals with a custom convolutional neural network (ResPotholeNet).
+
+> ⚠️ **Scope & Naming Disclosure (Screening vs. Fine-Grained Object Detection):**  
+> This system is designed and evaluated as a **two-stage road screening and patch classification pipeline**, not an anchor-based bounding box regression detector (such as YOLO or Faster R-CNN). The primary model is trained strictly as a binary patch classifier on candidate crops because the underlying dataset provides only image-level labels without coordinate supervision. Accordingly, bounding boxes originate directly from classical Stage-1 morphological contours.
 
 ---
 
-## 🏗️ Architecture: Two-Stage Detection Pipeline
-
-The system employs a two-stage detection pipeline: classical computer vision nominates candidate region proposals, and a custom CNN classifies each proposal.
+## 🏗️ Architecture: Two-Stage Screening Pipeline
 
 ```
 Input Video/Image
@@ -54,32 +55,32 @@ Input Video/Image
 - Each candidate proposal is cropped with a 10% context margin, resized to **128 × 128**, and normalized.
 - **The CNN sigmoid confidence is the sole accept/reject criterion** — no heuristic contrast blending.
 - **Non-Maximum Suppression (NMS)** (IoU threshold = 0.35) prunes duplicate overlapping proposals.
-- **Kalman Multi-Object Tracking (SORT)**: `PotholeTracker` implements the SORT algorithm (Bewley et al., ICIP 2016) with a 7D state vector $[u, v, s, r, \dot{u}, \dot{v}, \dot{s}]^T$, greedy bipartite IoU matching, `min_hits=2` temporal flicker suppression, and `max_age=8` track retirement. Aligns with **Unit III Kalman Filter** course topic.
+- **Kalman Multi-Object Tracking (SORT)**: `PotholeTracker` implements the SORT algorithm ([Bewley et al., ICIP 2016](https://arxiv.org/abs/1602.00763)) with a 7D state vector $[u, v, s, r, \dot{u}, \dot{v}, \dot{s}]^T$, greedy bipartite IoU matching, `min_hits=2` temporal flicker suppression, and `max_age=8` track retirement. Aligns with **Unit III Kalman Filter** course topic.
 
 ---
 
 ## 🧠 CNN Architecture: ResPotholeNet
 
-| Component | Architecture Details |
-|---|---|
-| **Input** | $3 \times 128 \times 128$ RGB road patch |
-| **Stem** | Conv 3→32 (stride 2) + Conv 32→64 (stride 1) + BatchNorm + SiLU ($128 \rightarrow 64$) |
-| **Stage 1** | Down Conv 64→64 (stride 2) + 2× ResBlocks with SE Attention ($64 \rightarrow 32$) |
-| **Stage 2** | Down Conv 64→128 (stride 2) + 2× ResBlocks with SE Attention ($32 \rightarrow 16$) |
-| **Stage 3** | Down Conv 128→256 (stride 2) + SPPF Module (multi-scale receptive field) ($16 \rightarrow 8$) |
-| **Head** | AdaptiveAvgPool2d(1, 1) → Linear(256, 128) → Dropout(0.3) → Linear(128, 32) → Linear(32, 1) → Sigmoid |
-| **Trainable Params** | **853,985 parameters** (100% custom from scratch, zero pretrained weights) |
+Built **without pretrained weights** using published architectural paradigms cited below:
 
-> **Note on Regression Head:** The model is strictly a patch classifier. The bounding box regression head was removed because the underlying dataset only contains image-level labels without coordinate annotations. All 853,985 parameters serve classification exclusively.
+| Component | Published Paradigm & Reference | Implementation Details |
+|---|---|---|
+| **Residual Blocks** | He et al., CVPR 2016 ([arXiv:1512.03385](https://arxiv.org/abs/1512.03385)) | 3 stages of bottleneck residual blocks with skip connections to prevent vanishing gradients |
+| **Channel Attention** | Hu et al., CVPR 2018 ([arXiv:1709.01507](https://arxiv.org/abs/1709.01507)) | Squeeze-and-Excitation (SE) modules (reduction ratio = 4) to emphasize salient crater contrast |
+| **Multi-Scale Pooling** | Jocher et al., 2020 (SPPF) | Spatial Pyramid Pooling - Fast with $5\times 5$ max-pooling kernels to capture varied crater scales |
+| **Classification Head** | Dense Fully Connected | AdaptiveAvgPool2d(1, 1) → Linear(256, 128) → Dropout(0.3) → Linear(128, 32) → Linear(32, 1) → Sigmoid |
+| **Parameter Count** | **853,985 trainable parameters** | Trained from scratch with Kaiming normal initialization. Zero pretrained weights. |
+
+> **Classification-Only Parameter Budget:** The model does not include a bounding box regression head. Because the dataset lacks coordinate annotations, a regressor could not be supervised. All 853,985 parameters serve patch classification exclusively.
 
 ---
 
 ## 🔬 Explainable AI (XAI): Grad-CAM
 
-[`models/gradcam.py`](models/gradcam.py) implements **Gradient-weighted Class Activation Mapping** (Selvaraju et al., ICCV 2017) to satisfy the course **Unit IV / XAI** requirement:
+[`models/gradcam.py`](models/gradcam.py) implements **Gradient-weighted Class Activation Mapping** ([Selvaraju et al., ICCV 2017](https://arxiv.org/abs/1610.02391)) to satisfy the course **Unit IV / XAI** requirement:
 - Hooks into the deepest SPPF convolution layer (`model.sppf.cv2.conv`).
 - Computes gradient-weighted activation heatmaps to reveal which visual features (crater borders, shadow gradients, asphalt texture contrast) drive pothole predictions.
-- Integrated directly into the Streamlit UI with interactive heatmap and visual attention overlay displays.
+- Integrated directly into the Streamlit UI via `generate_cam(crop_bgr)` with interactive heatmap and visual attention overlay displays.
 
 ---
 
@@ -87,17 +88,18 @@ Input Video/Image
 
 [`baseline.py`](baseline.py) fine-tunes a torchvision **ResNet-18 (ImageNet-1k pretrained)** on the identical dataset partition and patch crops, satisfying the **Unit II Model Adaptation** requirement:
 
-| Metric | ResPotholeNet (From Scratch) | Pretrained ResNet-18 (Fine-Tuned) |
+| Metric | ResPotholeNet (No Pretrained Weights) | Pretrained ResNet-18 (Fine-Tuned) |
 |---|---|---|
 | **Training Paradigm** | Random initialization (Kaiming normal) | ImageNet-1k pretrained + fine-tuned |
 | **Trainable Parameters** | **853,985** (1x) | **11,180,609** (~13.1x heavier) |
-| **Test Accuracy** | 86.93% (95% CI: [81.5%, 90.9%]) | 81.41% (95% CI: [75.4%, 86.2%]) |
+| **Test Accuracy** | 86.93% (95% CI: [81.54%, 90.93%]) | 81.41% (95% CI: [75.43%, 86.20%]) |
 | **Test Precision** | 92.55% | 85.11% |
 | **Test Recall** | 82.08% | 78.43% |
 | **Test F1-Score** | 87.00% | 81.77% |
 | **Inference Latency** | ~2.5 ms / patch | ~4.1 ms / patch |
 
-> ⚠️ **Statistical Significance Note:** With $n=199$ test crops from 108 source photos, the 95% Wilson confidence intervals overlap (81.5% vs 86.2%). **We do not claim that ResPotholeNet outperforms ResNet-18.** Rather, the custom model demonstrates that a lightweight, domain-tailored architecture (~854k parameters) achieves comparable classification capability with 13x fewer parameters and zero reliance on external ImageNet weights.
+> ⚠️ **Statistical Significance Note (Baseline Gap Within Noise):**  
+> With only $n=199$ test crops from 108 source photos, the 95% Wilson score confidence intervals overlap ([81.54%, 90.93%] vs [75.43%, 86.20%]). **We do not claim that ResPotholeNet outperforms ResNet-18.** The evidence shows that ResPotholeNet achieves comparable classification competence on this specific dataset while requiring 13x fewer parameters and zero reliance on external ImageNet pretraining.
 
 ---
 
@@ -106,7 +108,7 @@ Input Video/Image
 | Attribute | Specification |
 |---|---|
 | **Raw Source Photos** | 712 photos (364 pothole, 348 normal) |
-| **Deduplication** | SHA-256 byte hashing (6 exact duplicates removed) + perceptual dHash (Hamming $\le 2$, 1 near-duplicate removed) + **cross-class deduplication** $\rightarrow$ **705 clean unique source photos** |
+| **Deduplication** | SHA-256 byte hashing (6 duplicates removed) + perceptual dHash (Hamming $\le 2$, 1 near-duplicate removed) + **cross-class deduplication** $\rightarrow$ **705 clean unique source photos** |
 | **Deterministic Split** | Filenames sorted before splitting: **70% Train (492) / 15% Val (105) / 15% Test (108 photos)** |
 | **Data Leakage Prevention** | Source photo level partitioning guarantees patches from the same photo never cross train/val/test splits. |
 | **Symmetric Sampling** | Top 2 Stage-1 candidate proposals per photo extracted symmetrically for both positive and negative classes using `roi_mode="auto"`. |
@@ -116,8 +118,6 @@ Input Video/Image
 ---
 
 ## 📈 Multi-Level Empirical Evaluation
-
-To maintain scientific integrity, performance is evaluated at three distinct levels:
 
 ### 1. Patch-Level Classification ($n = 199$ unseen crops from 108 photos)
 
@@ -160,19 +160,19 @@ Image-Level Screening Confusion Matrix:
 
 ---
 
-### 3. Box-Level Ground-Truth Detection Benchmark (IoU $\ge 0.50$, $n = 30$ photos)
+### 3. Box-Level Ground-Truth Benchmark (IoU $\ge 0.50$, $n = 30$ photos)
 
-Evaluated using [`evaluate_box_level.py`](evaluate_box_level.py) on the 30 manually annotated ground-truth photos in [`data/test_ground_truth_boxes.json`](data/test_ground_truth_boxes.json):
+Evaluated using [`evaluate_box_level.py`](evaluate_box_level.py) on the 30 pilot annotated test photos in [`data/test_ground_truth_boxes.json`](data/test_ground_truth_boxes.json):
 
 | Metric | Measured Value | Meaning & Context |
 |---|---|---|
-| **Annotated Test Images** | **30** | Hand-annotated subset of test pothole photos |
-| **Ground-Truth Pothole Boxes** | **30** | Exactly 1 reference box per test photo |
+| **Annotated Test Images** | **30** | Pilot manually annotated subset of test pothole photos |
+| **Ground-Truth Pothole Boxes** | **30** | 1 reference box per test photo |
 | **True Positive Boxes (IoU $\ge 0.50$)** | **2** | Only 2 predicted boxes achieved $\ge 50\%$ IoU |
 | **False Positive Boxes (Pothole Photos)** | **241** | High candidate count on complex road textures |
 | **False Negative Boxes (Missed)** | **28** | Boxes that failed to meet 0.50 IoU overlap |
 | **Clean Road False Alarm Boxes** | **17** | False positive boxes across 30 clean road photos |
-| **Box Precision** | **0.82%** | Due to heavy multi-candidate proposal generation |
+| **Box Precision** | **0.82%** | Low due to multi-candidate proposal generation |
 | **Box Recall** | **6.67%** | 95% CI: [1.85%, 21.32%] |
 | **Box F1-Score** | **1.47%** | Harmonic mean of box precision and recall |
 | **Mean IoU (Matched True Positives)** | **56.10%** | Quality of overlap on the 2 successful matches |
@@ -180,23 +180,53 @@ Evaluated using [`evaluate_box_level.py`](evaluate_box_level.py) on the 30 manua
 
 ---
 
-## 🔍 Failure Diagnosis & Root Cause Analysis
+### 4. Stage-1 Proposal Recall Ceiling Benchmark (Reproducibility Script: `evaluate_stage1_recall.py`)
 
-### Why is Box-Level Localization (6.7%) Weak Despite High Image Recall (100%)?
+Run `python evaluate_stage1_recall.py` to reproduce these exact numbers saved in [`stage1_recall_metrics.json`](stage1_recall_metrics.json):
 
-We conducted an empirical ablation to determine whether the box-level failure stems from Stage 1 classical proposals or the Stage 2 CNN classifier:
+| Stage-1 Candidate Metric | Measured Value |
+|---|---|
+| **Mean Maximum IoU on GT Boxes** | **11.14%** (Median: 6.13%) |
+| **Candidate Recall @ IoU $\ge 0.10$** | **36.67%** (11 / 30 boxes) |
+| **Candidate Recall @ IoU $\ge 0.25$** | **10.00%** (3 / 30 boxes) |
+| **Candidate Recall @ IoU $\ge 0.50$** | **6.67%** (2 / 30 boxes) |
+| **Proposals / Pothole Photo** | 9.6 candidate proposals |
+| **Proposals / Clean Road Photo** | 1.6 candidate proposals |
 
-1. **Stage 1 Recall Ceiling (Root Cause)**:
-   - When running Stage 1 region proposals **alone** against the ground-truth boxes with no CNN filtering, only **2 of the 30 ground-truth boxes achieved an IoU $\ge 0.50$** (Stage 1 candidate recall ceiling = **6.67%**, mean maximum IoU = **11.1%**).
-   - Because the CNN can only classify candidates nominated by Stage 1, **Stage 1 is the primary bottleneck for box localization**. Classical adaptive thresholding fragments crater boundaries and isolates small dark sub-regions rather than the complete depression.
-2. **Image-Level Recall vs Localization**:
-   - The 100% image-level recall is an expected artifact of multi-candidate nomination: since the pipeline produces an average of 7.35 passing boxes per pothole photo, at least one box triggers on every photo. This confirms frame screening capability, but **not** precise object boundary localization.
-3. **False Alarms on Clean Roads**:
-   - 26.4% of clean road photos trigger at least one false positive box at threshold 0.50 (0.642 FPPI). Asphalt patches, deep pavement cracks, and harsh shadow seams resemble depressions to classical filters.
-4. **Proxy Supervision Label Noise**:
-   - Because the training set lacks bounding box coordinates, positive training patches were extracted using the top-2 Stage-1 classical proposals. Visual examination of [`positives_sheet.png`](positives_sheet.png) reveals that **only ~10 of 24 crops (~42%) depict true potholes**, while **~14 crops (~58%) capture non-pothole road noise** (shadows, cracks, dark asphalt, road boundaries). This label noise naturally limits classifier precision.
-5. **Severity Metric Disclaimer**:
-   - Severity categorization (Low / Medium / High) in the application is an unvalidated heuristic based strictly on relative bounding box pixel area ($A < 2\%$, $2\% \le A < 6\%$, $A \ge 6\%$). No ground-truth depth or physical dimension measurements exist in the dataset.
+---
+
+### 5. Real-Road Video Benchmark & Temporal Error Analysis (`evaluate_video.py`)
+
+Run `python evaluate_video.py --video sample_pothole_video.mp4` to reproduce results in [`video_evaluation_report.json`](video_evaluation_report.json):
+
+| Video Benchmark Attribute | Result |
+|---|---|
+| **Test Video** | `sample_pothole_video.mp4` (1280x720 @ 25 FPS, 692 frames, ~27.7s) |
+| **Inference Throughput** | **25.4 FPS** (Mean Latency: **23.9 ms / frame**) on CPU |
+| **Tracking Algorithm** | SORT Linear Kalman Filter (7D state vector) |
+| **Confirmed Unique Tracks** | Tracks maintained across successive frames |
+| **Flicker Suppression** | `min_hits=2` effectively eliminates single-frame false alarms |
+| **Qualitative Failure Modes** | Dark tar snakes and longitudinal pavement repair seams trigger sustained false proposals; sudden camera pitch changes on bumps challenge the linear velocity assumption. |
+
+---
+
+## 🔍 Critical Discussion, Failure Modes, and Methodological Notes
+
+1. **Stage 1 Recall Ceiling (Root Cause of Box Failure):**
+   - The Stage-1 benchmark proves that classical region proposals alone only reach IoU $\ge 0.50$ on 2 of 30 ground truth boxes (6.7% recall ceiling). Because the CNN classifier only classifies candidate patches nominated by Stage 1, the end-to-end pipeline cannot recover localization when Stage 1 fails to frame the pothole tightly.
+2. **Ground-Truth Annotation Limitations:**
+   - The 30 ground-truth bounding boxes in `data/test_ground_truth_boxes.json` were constructed by visual inspection with coordinates rounded to multiples of 10. They are approximate rectangles, whereas natural potholes have irregular, jagged boundaries (some with surrounding chalk markings like "FIXED"). Loose bounding boxes penalize IoU overlap, meaning part of the low IoU stems from coarse annotations.
+   - 30 single-box images is a pilot benchmark and does not represent a full-scale object detection dataset.
+3. **Screening vs. Localization Disconnect:**
+   - 100% image-level screening recall occurs because an average of 7.35 candidate boxes pass threshold per pothole image. While this demonstrates effective frame screening, it does not imply tight localization.
+4. **Proxy Supervision Label Noise (~58%):**
+   - Positive training crops were generated using top-2 Stage-1 classical proposals from pothole photos. Visual examination of [`positives_sheet.png`](positives_sheet.png) confirms that **only ~10 of 24 crops (~42%) represent clear potholes**, while **~14 crops (~58%) capture non-pothole road artifacts** (shadows, cracks, dark asphalt, road boundaries). This proxy label noise bounds classifier precision.
+5. **False Alarms on Clean Roads:**
+   - 26.4% of clean road photos trigger at least one false alarm box at threshold 0.50 (0.642 FPPI). Dark asphalt seams, oil stains, and shadow contours mimic crater depressions.
+6. **Severity Heuristic Disclaimer:**
+   - Severity rankings (Low / Medium / High) in the application are strictly an unvalidated proxy based on bounding box pixel area ($A < 2\%$, $2\% \le A < 6\%$, $A \ge 6\%$). No ground-truth depth, volume, or road roughness sensor data exists in this dataset.
+7. **Test Set Reuse:**
+   - Test images were inspected qualitatively across multiple development iterations. While splits were strictly isolated at the source photo level, repeated qualitative observation introduces minor test-set exposure bias.
 
 ---
 
@@ -209,12 +239,14 @@ cd ROAD_DAMAGE
 pip install -r requirements.txt
 ```
 
-### 2. Dataset Structure
+> **Note on torchvision:** `torchvision>=0.15.0` is included in `requirements.txt` exclusively for running the Unit II comparative transfer learning baseline ([`baseline.py`](baseline.py)). The primary ResPotholeNet model does not use torchvision.
+
+### 2. Dataset Setup
 ```
 data/
 ├── potholes/                   # Pothole road images (.jpg / .png)
 ├── normal/                     # Clear road pavement images (.jpg / .png)
-├── test_ground_truth_boxes.json # 30 hand-annotated test bounding boxes
+├── test_ground_truth_boxes.json # Pilot 30 hand-annotated test bounding boxes
 └── test_images_meta.json       # Metadata for test partitions
 ```
 
@@ -222,24 +254,29 @@ data/
 ```bash
 python -m streamlit run app.py
 ```
-Open **`http://localhost:8501`** in your browser.
-- **Upload video or image**: Real-time detection with Kalman multi-object tracking.
-- **Grad-CAM XAI**: Expand the explainability panel to inspect class activation heatmaps and visual attention overlays.
-- **Tracking Analytics**: Persistent track IDs, flicker filtering (`min_hits=2`), and unique pothole counts.
+Open **`http://localhost:8501`** in your browser:
+- Video & image upload with real-time detection and Kalman tracking.
+- Expand the Grad-CAM explainability panel for visual attention heatmaps.
 
 ### 4. Run Evaluations & Benchmarks
 
 ```bash
-# 1. Box-Level Ground Truth Evaluation (IoU >= 0.50 on annotated subset)
+# 1. Stage-1 Candidate Recall & IoU Benchmark (reproduces stage1_recall_metrics.json)
+python evaluate_stage1_recall.py
+
+# 2. Box-Level Ground Truth Evaluation (IoU >= 0.50 on annotated subset)
 python evaluate_box_level.py
 
-# 2. End-to-End Pipeline Evaluation (Full test images screening)
+# 3. Real-Road Video Benchmark & Temporal Error Analysis (sample_pothole_video.mp4)
+python evaluate_video.py --video sample_pothole_video.mp4 --stride 5
+
+# 4. End-to-End Pipeline Evaluation (Full test images screening)
 python evaluate_pipeline.py --weights pothole_cnn.pth --data_dir data
 
-# 3. Pretrained ResNet-18 Transfer Learning Baseline (Unit II)
+# 5. Pretrained ResNet-18 Transfer Learning Baseline (Unit II)
 python baseline.py --epochs 8 --batch_size 32
 
-# 4. Retrain Model from Scratch
+# 6. Retrain ResPotholeNet from Scratch
 python train.py --data_dir data --epochs 15 --batch_size 32
 ```
 
@@ -248,29 +285,35 @@ python train.py --data_dir data --epochs 15 --batch_size 32
 ## 📁 Repository Structure
 
 ```
-├── .gitignore               # Ignores raw images but tracks data/*.json annotations
+├── .gitignore                   # Ignores raw images but tracks data/*.json annotations
 ├── .streamlit/
-│   └── config.toml          # Streamlit configuration
-├── app.py                   # Streamlit web app (Kalman SORT tracking + Grad-CAM)
-├── detector.py              # Two-stage detection engine + KalmanBoxTracker + PotholeTracker
-├── train.py                 # Training pipeline (cross-class dedup + auto ROI + Focal Loss)
-├── baseline.py              # ResNet-18 fine-tuning baseline (Unit II)
-├── evaluate_pipeline.py     # End-to-end full image evaluation
-├── evaluate_box_level.py    # Box IoU evaluation on ground-truth annotations
-├── pothole_cnn.pth          # Sanitized trained ResPotholeNet weights (~854k params)
-├── model_metrics.json       # Patch-level evaluation metrics
-├── end_to_end_metrics.json  # Full validation sweep & test metrics
-├── box_level_metrics.json   # Detailed box-level benchmark metrics
-├── baseline_comparison.json # ResNet-18 vs ResPotholeNet comparison metrics
-├── positives_sheet.png      # Contact sheet of extracted Stage-1 proposals
-├── sample_gradcam.png       # Sample Grad-CAM attention overlay
-├── sample_pothole_video.mp4 # Sample dashcam video for testing
-├── requirements.txt         # Python dependencies
-└── README.md                # Project documentation and evaluation report
+│   └── config.toml              # Streamlit configuration
+├── app.py                       # Streamlit web app (Kalman SORT tracking + Grad-CAM)
+├── detector.py                  # Two-stage engine (strict=True model loading + SORT)
+├── train.py                     # Training pipeline (cross-class dedup + auto ROI + Focal Loss)
+├── baseline.py                  # ResNet-18 fine-tuning baseline (Unit II)
+├── evaluate_pipeline.py         # End-to-end full image evaluation
+├── evaluate_box_level.py        # Box IoU evaluation on ground-truth annotations
+├── evaluate_stage1_recall.py    # Standalone Stage-1 proposal recall benchmark
+├── evaluate_video.py            # Real-road video evaluation & temporal error analysis
+├── pothole_cnn.pth              # Sanitized trained ResPotholeNet weights (~854k params)
+├── model_metrics.json           # Patch-level evaluation metrics
+├── end_to_end_metrics.json      # Full validation sweep & test metrics
+├── box_level_metrics.json       # Detailed box-level benchmark metrics
+├── stage1_recall_metrics.json   # Stage-1 proposal benchmark results
+├── video_evaluation_report.json # Real-road video benchmark results
+├── baseline_comparison.json     # ResNet-18 vs ResPotholeNet comparison metrics
+├── positives_sheet.png          # Contact sheet of extracted Stage-1 proposals
+├── sample_gradcam.png           # Sample Grad-CAM attention overlay
+├── sample_pothole_video.mp4     # 720p dashcam video for testing
+├── requirements.txt             # Python dependencies (includes torchvision for baseline)
+└── README.md                    # Project documentation and evaluation report
 ```
 
 ---
 
-## 📜 Academic Integrity Note
+## 📜 Academic Integrity & Coursework Disclosures
 
-Developed for academic coursework. Formulated honestly as a **classical region proposal + custom CNN classifier pipeline with Kalman multi-object tracking and Grad-CAM explainability**. Built 100% from scratch with pure PyTorch — no YOLO, Ultralytics, torchvision backbones, or pretrained weights in the primary architecture. A fine-tuned ResNet-18 baseline is provided for Unit II comparison. All limitations, including box-level candidate recall ceilings, clean road false alarms, and label noise from proxy supervision, are documented openly without inflated claims.
+- **AI Assistance Disclosure:** Generative AI coding assistants were used during this project for code refactoring, linting, debugging linear algebra matrices in the Kalman filter, generating Grad-CAM visualization hooks, and drafting documentation. All algorithmic logic, model architectures, and experimental results were verified and benchmarked on local runtime hardware.
+- **Framework Syllabus Alignment:** The implementation is built in PyTorch. If your syllabus prescribes TensorFlow/Keras, confirm framework substitution acceptability with your course instructor.
+- **Model Attribution:** The primary model uses no pretrained weights. Skip connections, Squeeze-and-Excitation attention, and SPPF pooling are implemented based on published literature cited above.

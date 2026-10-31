@@ -1,0 +1,64 @@
+{
+  "video_path": "sample_pothole_video.mp4",
+  "video_properties": {
+    "resolution": "1280x720",
+    "fps": 25.0,
+    "total_frames": 692,
+    "duration_sec": 27.68
+  },
+  "evaluation_config": {
+    "stride": 5,
+    "confidence_threshold": 0.5,
+    "min_hits_confirmation": 2,
+    "max_age_retirement": 8
+  },
+  "performance_benchmarks": {
+    "evaluated_frames": 139,
+    "total_time_seconds": 5.48,
+    "effective_fps": 25.37,
+    "mean_latency_ms": 23.9
+  },
+  "tracking_results": {
+    "total_confirmed_unique_tracks": 1,
+    "sustained_tracks_count": 0,
+    "short_tracks_count": 1,
+    "all_tracks": [
+      {
+        "track_id": 5,
+        "first_frame": 75,
+        "last_frame": 100,
+        "total_hits": 2,
+        "max_score": 0.537,
+        "peak_severity": "low"
+      }
+    ]
+  },
+  "qualitative_error_analysis": {
+    "flicker_suppression": "min_hits=2 successfully suppressed transient single-frame candidates.",
+    "tracking_continuity": "0 potholes exhibited persistent spatial tracking across consecutive frames.",
+    "failure_modes": [
+      "Dark tar seams and asphalt repair patches with high local contrast trigger false proposal candidates.",
+      "Fast camera motion / bumps cause rapid scale change that occasionally outpaces the linear constant-velocity model."
+    ]
+  },
+  "detections_timeline": [
+    {
+      "frame": 100,
+      "timestamp_sec": 4.0,
+      "active_tracks_count": 1,
+      "tracks": [
+        {
+          "track_id": 5,
+          "box": [
+            1011,
+            401,
+            1117,
+            453
+          ],
+          "confidence": 0.503,
+          "hits": 2
+        }
+      ]
+    }
+  ]
+}

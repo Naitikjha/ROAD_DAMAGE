@@ -126,10 +126,8 @@ def train_and_eval_baseline(
     print("\n[2/2] Evaluating Custom ResPotholeNet (Trained 100% From Scratch)...")
     custom_model = ResPotholeNet(in_channels=3).to(device)
     ck = torch.load("pothole_cnn.pth", map_location=device)
-    raw_state = ck["model_state_dict"] if (isinstance(ck, dict) and "model_state_dict" in ck) else ck
-    model_keys = set(custom_model.state_dict().keys())
-    clean_state = {k: v for k, v in raw_state.items() if k in model_keys}
-    custom_model.load_state_dict(clean_state, strict=False)
+    state_dict = ck["model_state_dict"] if (isinstance(ck, dict) and "model_state_dict" in ck) else ck
+    custom_model.load_state_dict(state_dict, strict=True)
     custom_params = count_parameters(custom_model)
     custom_test_metrics = evaluate(custom_model, test_loader, device, threshold=0.5)
 
