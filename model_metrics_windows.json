@@ -1,0 +1,23 @@
+{
+  "training_approach": "Multi-Scale Sliding Window IoU-Supervised Retraining",
+  "parameters": 853985,
+  "epochs": 10,
+  "batch_size": 32,
+  "best_epoch": 9,
+  "validation_metrics": {
+    "accuracy": 74.42,
+    "precision": 100.0,
+    "recall": 15.38,
+    "f1_score": 26.67,
+    "tp": 2,
+    "fp": 0,
+    "fn": 11,
+    "tn": 30,
+    "epoch": 9,
+    "train_loss": 0.0253
+  },
+  "dataset_summary": {
+    "train_samples": 67,
+    "val_samples": 43
+  }
+}

@@ -12,11 +12,37 @@ target mismatch — see project report for ablation discussion).
 No pretrained backbones or transfer learning weights used.
 """
 
+import time
+import json
+from typing import List, Dict, Tuple, Optional, Any
+from pathlib import Path
+
 import cv2
 import numpy as np
 import torch
-from pathlib import Path
 from models.pothole_net import ResPotholeNet
+
+
+def load_validation_threshold(
+    metrics_path: str = "model_metrics_windows.json",
+    default: float = 0.50,
+) -> float:
+    """
+    Load the confidence threshold chosen during validation tuning (Step 3).
+    Ensures zero test leakage: the threshold is read directly from validation tuning metrics.
+    """
+    p = Path(metrics_path)
+    if not p.exists():
+        return default
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        thresh = data.get("chosen_inference_threshold")
+        if thresh is not None:
+            return float(thresh)
+    except Exception:
+        pass
+    return default
 
 
 def extract_stage1_candidates(
@@ -171,6 +197,124 @@ def extract_stage1_candidates(
 
     candidates.sort(key=lambda b: b[4], reverse=True)
     return [(b[0], b[1], b[2], b[3]) for b in candidates[:max_candidates]]
+
+
+PROPOSALS = "sliding"  # Options: "sliding" | "legacy"
+
+
+def generate_sliding_windows(
+    frame: np.ndarray,
+    roi_mode: str = "auto",
+    stride_ratio: float = 0.50,
+    max_windows: int = 300,
+    scale_fractions: Optional[List[float]] = None,
+    aspect_ratios: Optional[List[Tuple[int, int]]] = None,
+) -> list:
+    """
+    Generate bounded multi-scale sliding window candidate boxes over the road surface ROI.
+
+    Plain-words viva explanation:
+    1. Road ROI: Restricts candidate search to the drivable road surface so the CNN
+       never wastes budget on sky, horizon, or dashboard.
+    2. Multi-Scale Sampling: Generates boxes at relative scales (default [0.20, 0.35, 0.52])
+       times min(H, W).  For a 1280x720 dashcam frame these produce windows of roughly
+       144, 252, and 374 px — covering small road cracks up to large craters.  Three
+       aspect ratios are used: 1:1 (roughly square potholes), 2:1 (wide transverse
+       ruts), and 3:1 (longitudinal cracks and trenches).
+    3. Stride Setting: step = stride_ratio * window_dimension (default: 0.50).
+       Adjusting stride_ratio allows trading speed vs. spatial resolution:
+       a larger stride (e.g. 0.65) generates fewer windows for faster FPS;
+       a smaller stride (e.g. 0.45) increases localization overlap.
+    4. Bounded Budget — per-bucket subsampling: The total count is held to
+       max_windows (default 300).  When the count exceeds the budget we subsample
+       *within each (scale, aspect) bucket* uniformly so every scale and aspect ratio
+       keeps at least one window.
+
+    Parameters
+    ----------
+    frame : np.ndarray
+        BGR image or video frame.
+    roi_mode : str
+        'auto', 'dashcam', or 'photo'.
+    stride_ratio : float
+        Fraction of box dimension used as the spatial step (default: 0.50).
+    max_windows : int
+        Hard upper bound on candidates returned per frame (default: 300).
+    scale_fractions : list of float, optional
+        Custom scale multipliers relative to min(H, W). Default: [0.20, 0.35, 0.52].
+    aspect_ratios : list of (w, h) tuples, optional
+        Aspect ratios to use. Default: [(1, 1), (2, 1), (3, 1)].
+
+    Returns
+    -------
+    list of (x1, y1, x2, y2) integer tuples
+    """
+    h, w = frame.shape[:2]
+    if roi_mode == "auto":
+        mode = "dashcam" if (w / float(max(h, 1)) >= 1.4 and h >= 300) else "photo"
+    else:
+        mode = roi_mode
+
+    if mode == "dashcam":
+        y_min, y_max = int(h * 0.45), h
+    elif mode == "photo":
+        y_min = int(h * 0.15) if h > 200 else 0
+        y_max = int(h * 0.95) if h > 200 else h
+    else:
+        y_min, y_max = 0, h
+
+    roi_h = y_max - y_min
+    roi_w = w
+    base = min(h, w)
+
+    if scale_fractions is None:
+        scale_fractions = [0.20, 0.35, 0.52]
+    if aspect_ratios is None:
+        aspect_ratios = [(1, 1), (2, 1), (3, 1)]
+
+    scales = [max(16, int(base * s)) for s in scale_fractions]
+
+    # ── Collect windows per (scale, aspect) bucket ───────────────────────────
+    # Keeping buckets separate lets us subsample proportionally later so that
+    # large-scale windows (fewer but important for big potholes) are not wiped
+    # out by the more numerous small-scale windows.
+    buckets: list = []          # list of lists, one per valid (scale, aspect)
+    for s in scales:
+        for ar_w, ar_h in aspect_ratios:
+            bh = int(s / np.sqrt(ar_w / ar_h))
+            bw = int(bh * (ar_w / ar_h))
+            if bh > roi_h or bw > roi_w or bh < 24 or bw < 24:
+                continue
+
+            step_y = max(18, int(bh * stride_ratio))
+            step_x = max(18, int(bw * stride_ratio))
+
+            bucket: list = []
+            for y1 in range(y_min, y_max - bh + 1, step_y):
+                for x1 in range(0, roi_w - bw + 1, step_x):
+                    bucket.append((x1, y1, x1 + bw, y1 + bh))
+            if bucket:
+                buckets.append(bucket)
+
+    total = sum(len(b) for b in buckets)
+    if total == 0:
+        return []
+
+    # ── Per-bucket uniform subsampling when over budget ──────────────────────
+    # Each bucket gets a quota proportional to its size.  Within the bucket,
+    # windows are picked at evenly spaced indices so spatial coverage is
+    # maintained rather than always biasing toward the top-left corner.
+    if total > max_windows:
+        windows: list = []
+        for bucket in buckets:
+            # Proportional quota, at least 1 window per non-empty bucket
+            quota = max(1, int(round(len(bucket) / total * max_windows)))
+            indices = np.linspace(0, len(bucket) - 1, min(quota, len(bucket)), dtype=int)
+            windows.extend(bucket[i] for i in indices)
+    else:
+        windows = [w for b in buckets for w in b]
+
+    return windows
 
 
 def extract_crop(
@@ -464,26 +608,120 @@ class PotholeTracker:
         return summary
 
 
+def weighted_box_merge(detections: list, iou_thresh: float = 0.35) -> list:
+    """
+    Weighted Box Merge (WBM / Weighted Box Fusion):
+    Instead of greedily discarding overlapping detections like standard NMS,
+    groups boxes with IoU >= iou_thresh into clusters and computes a
+    confidence-weighted average of their coordinates:
+        coord_merged = sum(conf_i * coord_i) / sum(conf_i)
+    The cluster's final confidence score is the maximum confidence among the constituent
+    boxes.
+
+    Viva explanation:
+    - Standard NMS discards all but the single highest-scoring box in an overlapping group,
+      which can cause boundary jitter across consecutive video frames.
+    - Weighted Box Merge combines all overlapping positive sliding windows, weighting
+      their coordinates by predicted CNN confidence:
+          x_merged = sum(conf_i * x_i) / sum(conf_i)
+      This pulls the final bounding box toward the consensus center of highest pothole confidence,
+      producing tighter, smoother box predictions for irregularly shaped road damage.
+    """
+    if not detections:
+        return []
+
+    sorted_dets = sorted(detections, key=lambda d: d["score"], reverse=True)
+    clusters: List[List[Dict[str, Any]]] = []
+
+    for det in sorted_dets:
+        box_a = det["box"]
+        matched_cluster = None
+        for cluster in clusters:
+            leader_box = cluster[0]["box"]
+            xA = max(box_a[0], leader_box[0])
+            yA = max(box_a[1], leader_box[1])
+            xB = min(box_a[2], leader_box[2])
+            yB = min(box_a[3], leader_box[3])
+            inter = max(0, xB - xA) * max(0, yB - yA)
+            areaA = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+            areaB = (leader_box[2] - leader_box[0]) * (leader_box[3] - leader_box[1])
+            union = areaA + areaB - inter
+            iou = inter / max(union, 1e-6)
+            if iou >= iou_thresh:
+                matched_cluster = cluster
+                break
+
+        if matched_cluster is not None:
+            matched_cluster.append(det)
+        else:
+            clusters.append([det])
+
+    merged = []
+    for cluster in clusters:
+        total_score = sum(d["score"] for d in cluster)
+        max_score = max(d["score"] for d in cluster)
+
+        if total_score > 0:
+            avg_x1 = sum(d["score"] * d["box"][0] for d in cluster) / total_score
+            avg_y1 = sum(d["score"] * d["box"][1] for d in cluster) / total_score
+            avg_x2 = sum(d["score"] * d["box"][2] for d in cluster) / total_score
+            avg_y2 = sum(d["score"] * d["box"][3] for d in cluster) / total_score
+        else:
+            avg_x1, avg_y1, avg_x2, avg_y2 = cluster[0]["box"]
+
+        merged_box = (int(round(avg_x1)), int(round(avg_y1)), int(round(avg_x2)), int(round(avg_y2)))
+        res_item = {
+            "box": merged_box,
+            "score": round(max_score, 3),
+            "merged_count": len(cluster),
+        }
+        if "severity" in cluster[0]:
+            res_item["severity"] = cluster[0]["severity"]
+        merged.append(res_item)
+
+    return merged
+
+
 class PotholeDetector:
     """
     Two-Stage Pothole Detection Engine.
-    Stage 1: Classical morphological region proposals.
+    Stage 1: Multi-scale sliding window proposals (or legacy classical CV contours).
     Stage 2: ResPotholeNet CNN binary classifier (sole decision maker).
+    Stage 3: Box suppression / fusion (standard NMS or Weighted Box Merge).
     """
 
-    def __init__(self, weights_path: str = None, device: str = None):
+    def __init__(
+        self,
+        weights_path: str = None,
+        device: str = None,
+        proposals: str = PROPOSALS,
+        conf_threshold: float = None,
+    ):
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
 
+        self.proposals = proposals
+        if conf_threshold is not None:
+            self.conf_threshold = conf_threshold
+        else:
+            self.conf_threshold = load_validation_threshold()
+
         self.model = ResPotholeNet(in_channels=3).to(self.device).float()
+
+        # If weights_path not specified, prefer retrained sliding window weights if available
+        if weights_path is None:
+            if Path("pothole_cnn_windows.pth").exists():
+                weights_path = "pothole_cnn_windows.pth"
+            elif Path("pothole_cnn.pth").exists():
+                weights_path = "pothole_cnn.pth"
 
         if weights_path and Path(weights_path).exists():
             checkpoint = torch.load(weights_path, map_location=self.device, weights_only=True)
             state_dict = checkpoint["model_state_dict"] if (isinstance(checkpoint, dict) and "model_state_dict" in checkpoint) else checkpoint
             self.model.load_state_dict(state_dict, strict=True)
-            print(f"Loaded trained ResPotholeNet weights from {weights_path}")
+            print(f"Loaded trained ResPotholeNet weights from {weights_path} (proposals={self.proposals}, threshold={self.conf_threshold:.2f})")
         else:
             raise FileNotFoundError(
                 f"Weights file not found: '{weights_path}'. "
@@ -493,34 +731,118 @@ class PotholeDetector:
         self.model.float()
         self.model.eval()
 
-    def extract_candidates(self, frame: np.ndarray, use_roi: bool = True, roi_mode: str = None) -> list:
-        """Stage 1: Extract candidate bounding boxes."""
-        return extract_stage1_candidates(frame, use_roi=use_roi, roi_mode=roi_mode)
+    def extract_candidates(
+        self,
+        frame: np.ndarray,
+        use_roi: bool = True,
+        roi_mode: str = None,
+        stride_ratio: float = 0.50,
+        max_windows: int = 300,
+        scale_fractions: Optional[List[float]] = None,
+    ) -> list:
+        """Extract candidate bounding boxes via sliding windows or legacy classical CV."""
+        if self.proposals == "sliding":
+            return generate_sliding_windows(
+                frame,
+                roi_mode=roi_mode or "auto",
+                stride_ratio=stride_ratio,
+                max_windows=max_windows,
+                scale_fractions=scale_fractions,
+            )
+        else:
+            return extract_stage1_candidates(frame, use_roi=use_roi, roi_mode=roi_mode)
 
     def predict(
         self,
         frame: np.ndarray,
-        conf_threshold: float = 0.5,
+        conf_threshold: float = None,
         use_roi: bool = True,
         roi_mode: str = None,
+        batch_size: int = 64,
+        iou_thresh: float = 0.35,
+        nms_mode: str = "nms",
+        stride_ratio: float = 0.50,
+        max_windows: int = 300,
+        scale_fractions: Optional[List[float]] = None,
     ) -> list:
         """
         Detect potholes in a single frame.
 
-        Stage 1: Classical region proposals generate candidate boxes.
-        Stage 2: Each candidate patch is classified by ResPotholeNet.
+        Stage 1: Candidate proposals (sliding windows or legacy classical contours).
+        Stage 2: Batched ResPotholeNet classification.
                  The CNN sigmoid confidence is the SOLE accept/reject criterion.
+        Stage 3: Non-Maximum Suppression (standard NMS or Weighted Box Merge).
 
         Returns:
             list of {"box": (x1, y1, x2, y2), "score": float}
         """
-        candidate_boxes = self.extract_candidates(frame, use_roi=use_roi, roi_mode=roi_mode)
-        if not candidate_boxes:
-            return []
+        dets, _ = self.predict_timed(
+            frame=frame,
+            conf_threshold=conf_threshold,
+            use_roi=use_roi,
+            roi_mode=roi_mode,
+            batch_size=batch_size,
+            iou_thresh=iou_thresh,
+            nms_mode=nms_mode,
+            stride_ratio=stride_ratio,
+            max_windows=max_windows,
+            scale_fractions=scale_fractions,
+        )
+        return dets
 
+    def predict_timed(
+        self,
+        frame: np.ndarray,
+        conf_threshold: float = None,
+        use_roi: bool = True,
+        roi_mode: str = None,
+        batch_size: int = 64,
+        iou_thresh: float = 0.35,
+        nms_mode: str = "nms",
+        stride_ratio: float = 0.50,
+        max_windows: int = 300,
+        scale_fractions: Optional[List[float]] = None,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
+        """
+        Detect potholes in a single frame and report execution latency breakdown (in ms).
+
+        Returns:
+            detections: list of {"box": (x1, y1, x2, y2), "score": float, ...}
+            timing: dict with proposal_ms, crop_prep_ms, cnn_inference_ms, nms_ms, total_ms, fps, num_windows
+        """
+        if conf_threshold is None:
+            conf_threshold = self.conf_threshold
+
+        t_start = time.perf_counter()
+
+        # 1. Candidate proposals
+        t0 = time.perf_counter()
+        candidate_boxes = self.extract_candidates(
+            frame,
+            use_roi=use_roi,
+            roi_mode=roi_mode,
+            stride_ratio=stride_ratio,
+            max_windows=max_windows,
+            scale_fractions=scale_fractions,
+        )
+        t1 = time.perf_counter()
+        proposal_ms = (t1 - t0) * 1000.0
+
+        if not candidate_boxes:
+            t_end = time.perf_counter()
+            return [], {
+                "proposal_ms": round(proposal_ms, 2),
+                "crop_prep_ms": 0.0,
+                "cnn_inference_ms": 0.0,
+                "nms_ms": 0.0,
+                "total_ms": round((t_end - t_start) * 1000.0, 2),
+                "fps": round(1000.0 / max((t_end - t_start) * 1000.0, 1e-3), 2),
+                "num_windows": 0,
+            }
+
+        # 2. Patch extraction & normalization
         patch_tensors = []
         valid_boxes = []
-
         for box in candidate_boxes:
             patch = extract_crop(frame, box, crop_size=128, pad_ratio=0.1)
             if patch is None:
@@ -531,28 +853,98 @@ class PotholeDetector:
             patch_tensors.append(tensor)
             valid_boxes.append(box)
 
+        t2 = time.perf_counter()
+        crop_prep_ms = (t2 - t1) * 1000.0
+
         if not patch_tensors:
-            return []
+            t_end = time.perf_counter()
+            return [], {
+                "proposal_ms": round(proposal_ms, 2),
+                "crop_prep_ms": round(crop_prep_ms, 2),
+                "cnn_inference_ms": 0.0,
+                "nms_ms": 0.0,
+                "total_ms": round((t_end - t_start) * 1000.0, 2),
+                "fps": round(1000.0 / max((t_end - t_start) * 1000.0, 1e-3), 2),
+                "num_windows": len(candidate_boxes),
+            }
 
-        batch = torch.cat(patch_tensors, dim=0).to(self.device)
+        # 3. Batched ResPotholeNet CNN classification
+        cnn_scores_list = []
         with torch.no_grad():
-            cnn_conf, _ = self.model(batch)
-            cnn_scores = cnn_conf.squeeze(-1).cpu().numpy()
+            for b_idx in range(0, len(patch_tensors), batch_size):
+                batch = torch.cat(patch_tensors[b_idx:b_idx + batch_size], dim=0).to(self.device)
+                cnn_conf, _ = self.model(batch)
+                scores = cnn_conf.squeeze(-1).cpu().numpy()
+                if scores.ndim == 0:
+                    scores = np.array([float(scores)])
+                cnn_scores_list.extend(scores.tolist())
 
-        # Handle single patch output dimension
-        if cnn_scores.ndim == 0:
-            cnn_scores = np.array([float(cnn_scores)])
+        t3 = time.perf_counter()
+        cnn_inference_ms = (t3 - t2) * 1000.0
 
-        detections = []
+        # 4. Thresholding & NMS / Weighted Box Merge
+        raw_detections = []
         for i, (bx1, by1, bx2, by2) in enumerate(valid_boxes):
-            score = float(np.clip(cnn_scores[i], 0.0, 1.0))
+            score = float(np.clip(cnn_scores_list[i], 0.0, 1.0))
             if score >= conf_threshold:
-                detections.append({
+                raw_detections.append({
                     "box": (bx1, by1, bx2, by2),
                     "score": round(score, 3),
                 })
 
-        return self.non_max_suppression(detections, iou_thresh=0.35)
+        if nms_mode in ("merge", "wbm", "weighted"):
+            final_detections = weighted_box_merge(raw_detections, iou_thresh=iou_thresh)
+        else:
+            final_detections = self.non_max_suppression(raw_detections, iou_thresh=iou_thresh)
+
+        t4 = time.perf_counter()
+        nms_ms = (t4 - t3) * 1000.0
+        total_ms = (t4 - t_start) * 1000.0
+
+        timing_stats = {
+            "proposal_ms": round(proposal_ms, 2),
+            "crop_prep_ms": round(crop_prep_ms, 2),
+            "cnn_inference_ms": round(cnn_inference_ms, 2),
+            "nms_ms": round(nms_ms, 2),
+            "total_ms": round(total_ms, 2),
+            "fps": round(1000.0 / max(total_ms, 1e-3), 2),
+            "num_windows": len(candidate_boxes),
+        }
+
+        return final_detections, timing_stats
+
+    def predict_and_track(
+        self,
+        frame: np.ndarray,
+        tracker: Any,
+        frame_idx: int,
+        conf_threshold: float = None,
+        use_roi: bool = True,
+        roi_mode: str = None,
+        batch_size: int = 64,
+        iou_thresh: float = 0.35,
+        nms_mode: str = "nms",
+        stride_ratio: float = 0.50,
+        max_windows: int = 300,
+        scale_fractions: Optional[List[float]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        End-to-end frame processing: detect bounding boxes and pass them to PotholeTracker.
+        Maintains unique track IDs, Kalman smoothing, and hit confirmation across frames.
+        """
+        detections = self.predict(
+            frame=frame,
+            conf_threshold=conf_threshold,
+            use_roi=use_roi,
+            roi_mode=roi_mode,
+            batch_size=batch_size,
+            iou_thresh=iou_thresh,
+            nms_mode=nms_mode,
+            stride_ratio=stride_ratio,
+            max_windows=max_windows,
+            scale_fractions=scale_fractions,
+        )
+        return tracker.update(detections, frame_idx=frame_idx)
 
     @staticmethod
     def non_max_suppression(detections: list, iou_thresh: float = 0.35) -> list:

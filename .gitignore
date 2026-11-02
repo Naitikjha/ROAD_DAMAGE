@@ -22,3 +22,6 @@ data/*
 !data/*.json
 temp_repo/
 test_pothole.jpg
+
+# Evaluation failure gallery
+failure_gallery/

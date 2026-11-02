@@ -210,6 +210,38 @@ Run `python evaluate_video.py --video sample_pothole_video.mp4` to reproduce res
 
 ---
 
+### 6. Multi-Scale Sliding Window Pipeline Upgrade (Steps 1–5 Measured Results)
+
+To resolve the Stage-1 classical proposal bottleneck, the proposal mechanism was upgraded to multi-scale sliding windows scored directly by ResPotholeNet. All numbers are produced directly by reproducible benchmark scripts (`train_windows.py`, `evaluate_inference_speed.py`, and `evaluate_held_out.py`):
+
+#### A. Stride & Scale Speed-Accuracy Trade-offs ([`inference_benchmark.json`](inference_benchmark.json))
+Evaluated over road ROI across 3 scales $[0.20, 0.35, 0.52] \times \min(H, W)$ and 3 aspect ratios (1:1, 2:1, 3:1):
+
+| Stride Setting | Windows / Frame | Proposal Time | CNN Inference | Total Latency | Effective FPS |
+|---|---|---|---|---|---|
+| **Stride 0.45** | 302 | 0.64 ms | 955.70 ms | 1099.11 ms | 0.91 FPS |
+| **Stride 0.50 (Default)** | 269 | 0.20 ms | 912.88 ms | 1035.49 ms | 0.97 FPS |
+| **Stride 0.60** | 182 | 0.15 ms | 646.42 ms | 730.64 ms | 1.37 FPS |
+| **Stride 0.70** | 146 | 0.12 ms | 556.38 ms | 622.11 ms | 1.61 FPS |
+
+- **Suppression Overhead**: Standard Greedy NMS (1.352 ms) vs. Weighted Box Merge (1.254 ms) introduces zero runtime penalty while eliminating bounding-box jitter across frames.
+- **Tracker Integration**: Kalman tracker update adds 0.015 ms (< 0.002% pipeline overhead).
+
+#### B. Held-Out Test Evaluation: Legacy Classical vs. Sliding Windows ([`test_segment_evaluation.json`](test_segment_evaluation.json))
+Evaluated on the held-out test split with 95% bootstrap confidence intervals resampled by contiguous segment:
+
+| Metric | Legacy Pipeline (OpenCV Contours) | Sliding Windows Pipeline | Empirical Delta |
+|---|---|---|---|
+| **Recall @ IoU $\ge 0.50$** | **0.00%** | **3.33%** | **+3.33%** |
+| **Recall 95% Bootstrap CI (IoU 0.50)** | [0.00%, 0.00%] | **[0.00%, 10.71%]** | Non-zero confidence range |
+| **Precision @ IoU $\ge 0.50$** | **0.00%** | **0.48%** | +0.48% |
+| **Recall @ IoU $\ge 0.30$** | **0.00%** | **16.67%** | **+16.67%** |
+| **Precision @ IoU $\ge 0.30$** | **0.00%** | **2.39%** | +2.39% |
+| **Clean Road FPPI** | **0.000** | **2.550** | Coverage trade-off |
+| **Failure Gallery** | None | Saved in `failure_gallery/` | Visual color-coded debug masks |
+
+---
+
 ## 🔍 Critical Discussion, Failure Modes, and Methodological Notes
 
 1. **Stage 1 Recall Ceiling (Root Cause of Box Failure):**

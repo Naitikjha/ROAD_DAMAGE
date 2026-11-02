@@ -1,0 +1,102 @@
+{
+  "step": 4,
+  "title": "Inference Latency, Stride Trade-off, and Tracker Integration",
+  "validation_threshold": 0.5,
+  "stride_tradeoffs": {
+    "stride_0.45": {
+      "stride_ratio": 0.45,
+      "avg_windows": 302.0,
+      "avg_proposal_ms": 0.64,
+      "avg_crop_prep_ms": 141.32,
+      "avg_cnn_inference_ms": 955.7,
+      "avg_nms_ms": 1.45,
+      "avg_total_ms": 1099.11,
+      "effective_fps": 0.91
+    },
+    "stride_0.50": {
+      "stride_ratio": 0.5,
+      "avg_windows": 269.0,
+      "avg_proposal_ms": 0.2,
+      "avg_crop_prep_ms": 121.16,
+      "avg_cnn_inference_ms": 912.88,
+      "avg_nms_ms": 1.26,
+      "avg_total_ms": 1035.49,
+      "effective_fps": 0.97
+    },
+    "stride_0.60": {
+      "stride_ratio": 0.6,
+      "avg_windows": 182.0,
+      "avg_proposal_ms": 0.15,
+      "avg_crop_prep_ms": 83.15,
+      "avg_cnn_inference_ms": 646.42,
+      "avg_nms_ms": 0.92,
+      "avg_total_ms": 730.64,
+      "effective_fps": 1.37
+    },
+    "stride_0.70": {
+      "stride_ratio": 0.7,
+      "avg_windows": 146.0,
+      "avg_proposal_ms": 0.12,
+      "avg_crop_prep_ms": 64.88,
+      "avg_cnn_inference_ms": 556.38,
+      "avg_nms_ms": 0.72,
+      "avg_total_ms": 622.11,
+      "effective_fps": 1.61
+    }
+  },
+  "nms_vs_weighted_box_merge": {
+    "standard_nms_ms": 1.352,
+    "weighted_box_merge_ms": 1.254,
+    "delta_ms": -0.098
+  },
+  "tracker_pipeline": {
+    "frames_evaluated": 5,
+    "avg_detector_ms": 969.27,
+    "avg_tracker_ms": 0.015,
+    "end_to_end_ms": 969.28,
+    "effective_fps": 1.03,
+    "unique_confirmed_potholes": 0,
+    "per_frame_samples": [
+      {
+        "frame_idx": 0,
+        "raw_detections": 0,
+        "confirmed_tracked_detections": 0,
+        "detector_total_ms": 956.13,
+        "tracker_update_ms": 0.018,
+        "full_pipeline_ms": 956.15
+      },
+      {
+        "frame_idx": 1,
+        "raw_detections": 0,
+        "confirmed_tracked_detections": 0,
+        "detector_total_ms": 975.73,
+        "tracker_update_ms": 0.026,
+        "full_pipeline_ms": 975.76
+      },
+      {
+        "frame_idx": 2,
+        "raw_detections": 0,
+        "confirmed_tracked_detections": 0,
+        "detector_total_ms": 958.76,
+        "tracker_update_ms": 0.011,
+        "full_pipeline_ms": 958.77
+      },
+      {
+        "frame_idx": 3,
+        "raw_detections": 0,
+        "confirmed_tracked_detections": 0,
+        "detector_total_ms": 986.43,
+        "tracker_update_ms": 0.011,
+        "full_pipeline_ms": 986.44
+      },
+      {
+        "frame_idx": 4,
+        "raw_detections": 0,
+        "confirmed_tracked_detections": 0,
+        "detector_total_ms": 969.28,
+        "tracker_update_ms": 0.01,
+        "full_pipeline_ms": 969.29
+      }
+    ]
+  }
+}
